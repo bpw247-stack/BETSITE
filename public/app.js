@@ -16,6 +16,8 @@
     schedule: {}, // `${league}:${days}` -> { loading, data, error }
     h2h: {}, // `${league}:${a}:${b}` -> { loading, data, error }
     h2hOpen: new Set(), // keys of expanded "previous matchups" panels
+    niche: {}, // `${league}:${a}:${b}` -> { loading, data, error }
+    coaches: [], // coaching staffs you've entered, keyed "SPORT-ABBR"
     sort: { key: 'date', dir: -1 },
   };
 
@@ -124,8 +126,8 @@
   }
 
   async function loadAll() {
-    const [bets, notes, teamNotes] = await Promise.all([api('GET', '/api/bets'), api('GET', '/api/notes'), api('GET', '/api/teamNotes')]);
-    Object.assign(state, { bets, notes, teamNotes });
+    const [bets, notes, teamNotes, coaches] = await Promise.all([api('GET', '/api/bets'), api('GET', '/api/notes'), api('GET', '/api/teamNotes'), api('GET', '/api/coaches')]);
+    Object.assign(state, { bets, notes, teamNotes, coaches });
   }
 
   // ---------- data mutations ----------
@@ -1143,6 +1145,7 @@
           </details>
           ${my.length ? `<div class="game-mybets">📌 You have ${plural(my.length, 'pending pick')} on this game: ${my.map((x) => `<a href="#/bet/${encodeURIComponent((x.parlay || x).id)}">${esc(betTitle(x))}${x.parlay ? ' (parlay leg)' : ''}</a>`).join(', ')}</div>` : ''}
           <div class="btn-row game-actions">
+            <button class="btn sm primary" data-niche="${esc(g.id)}">📊 Niche Stats</button>
             <button class="btn sm" data-bet-game="${esc(g.id)}" data-team="${esc(g.a)}" data-opp="${esc(g.h)}" data-date="${esc(g.date)}">+ Bet ${esc(g.a)}</button>
             <button class="btn sm" data-bet-game="${esc(g.id)}" data-team="${esc(g.h)}" data-opp="${esc(g.a)}" data-date="${esc(g.date)}">+ Bet ${esc(g.h)}</button>
           </div>
@@ -1209,6 +1212,12 @@
         });
       })
     );
+    app.querySelectorAll('[data-niche]').forEach((btn) =>
+      btn.addEventListener('click', () => {
+        const g = (sched && sched.data ? sched.data.games : []).find((x) => x.id === btn.dataset.niche);
+        if (g) openNicheStats({ league, sport, a: codeFor(sport, g.away), h: codeFor(sport, g.home), game: g });
+      })
+    );
     app.querySelectorAll('[data-bet-game]').forEach((btn) =>
       btn.addEventListener('click', () => {
         const d = new Date(btn.dataset.date);
@@ -1217,6 +1226,214 @@
       })
     );
   }
+
+  // ---------- niche stats ----------
+
+  const ET_FMT = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: 'numeric', hourCycle: 'h23' });
+  function gameSlots(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return {};
+    const p = Object.fromEntries(ET_FMT.formatToParts(d).map((x) => [x.type, x.value]));
+    const night = Number(p.hour) >= 19;
+    return { primetime: night, mnf: p.weekday === 'Mon', tnf: p.weekday === 'Thu' && night, snf: p.weekday === 'Sun' && night };
+  }
+
+  function loadNiche(league, a, b, force) {
+    const key = `${league}:${a}:${b}`;
+    const cur = state.niche[key];
+    if (cur && !force && (cur.loading || cur.data)) return cur.promise || Promise.resolve(cur);
+    const entry = { loading: true };
+    entry.promise = api('GET', `/api/niche/${league}?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}${force ? '&refresh=1' : ''}`)
+      .then((data) => Object.assign(entry, { loading: false, data, error: null }))
+      .catch((err) => Object.assign(entry, { loading: false, error: err.message }));
+    state.niche[key] = entry;
+    return entry.promise;
+  }
+
+  // --- coaching staffs (entered by you) and connections between them ---
+  const COACH_ROLES = ['Head Coach', 'Offensive Coordinator', 'Defensive Coordinator', 'Special Teams Coordinator', 'QB Coach', 'Assistant', 'Other'];
+  const staffOf = (sport, abbr) => ((state.coaches.find((c) => c.id === `${sport}-${abbr}`) || {}).staff || []);
+
+  function mentionsTeam(text, sport, abbr) {
+    if (!text) return false;
+    const full = teamName(sport, abbr);
+    const nick = full.split(' ').pop();
+    const esc_ = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`\\b${esc_(abbr)}\\b`).test(text) || new RegExp(`\\b(${esc_(full)}|${esc_(nick)})\\b`, 'i').test(text);
+  }
+
+  function coachingConnections(sport, a, b) {
+    const sa = staffOf(sport, a).map((c) => ({ ...c, team: a }));
+    const sb = staffOf(sport, b).map((c) => ({ ...c, team: b }));
+    const direct = [];
+    for (const [list, other] of [[sa, b], [sb, a]]) {
+      for (const c of list) if (mentionsTeam(c.history, sport, other)) direct.push({ coach: c, other });
+    }
+    const shared = [];
+    for (const [x] of window.LEAGUES[sport] || []) {
+      if (x === a || x === b) continue;
+      const ca = sa.filter((c) => mentionsTeam(c.history, sport, x));
+      const cb = sb.filter((c) => mentionsTeam(c.history, sport, x));
+      if (ca.length && cb.length) shared.push({ team: x, coaches: [...ca, ...cb] });
+    }
+    return { direct, shared, entered: sa.length + sb.length };
+  }
+
+  function nicheHtml(ctx) {
+    const { league, sport, a, h, game } = ctx;
+    const entry = state.niche[`${league}:${a}:${h}`];
+    const slots = sport === 'NFL' ? gameSlots(game.date) : {};
+    const slotNames = [slots.mnf && 'Monday Night', slots.tnf && 'Thursday Night', slots.snf && 'Sunday Night', !slots.mnf && !slots.tnf && !slots.snf && slots.primetime && 'Primetime'].filter(Boolean);
+    const head = `<div class="card-head" style="margin-bottom:4px"><h2>📊 Niche stats: ${esc(a)} @ ${esc(h)}</h2>
+        <button type="button" class="btn sm" data-close>Close</button></div>
+      <div class="muted small" style="margin-bottom:12px">${fmtGameTime(game.date)}${slotNames.length ? ` · <strong>${slotNames.join(' · ')}</strong>` : ''}${game.spread ? ` · Line ${esc(game.spread)}` : ''}${game.overUnder != null ? ` · O/U ${esc(game.overUnder)}` : ''}
+      · <span class="hl-key">highlighted</span> = applies to this game</div>`;
+    if (!entry || entry.loading) return head + '<div class="empty">Crunching the numbers… (the first time can take ~20 seconds while past betting lines are looked up)</div>';
+    if (entry.error) return head + `<div class="alert error">${esc(entry.error)}</div>`;
+    const ta = entry.data.teams[a] || {};
+    const th = entry.data.teams[h] || {};
+
+    // which team is favored in this game?
+    const m = /^([A-Z]{2,4})\s+-/.exec(game.spread || '');
+    const fav = m ? m[1] : null;
+    const sameDiv = ta.division && ta.division === th.division;
+    const lastResult = (t) => (t.recent && t.recent[0] ? t.recent[0].result : null);
+    const relevantSplit = (key, team, isHome) =>
+      key === 'overall' || (key === 'home' && isHome) || (key === 'away' && !isHome) || slots[key] ||
+      (key === 'division' && sameDiv) || (key === 'afterLoss' && lastResult(team) === 'L') || (key === 'afterWin' && lastResult(team) === 'W');
+    const relevantAts = (key, abbr, isHome) =>
+      key === 'overall' || (key === 'home' && isHome) || (key === 'away' && !isHome) || (key === 'primetime' && slots.primetime) ||
+      (key === 'fav' && fav === abbr) || (key === 'dog' && fav && fav !== abbr);
+
+    const wl = (r) => (r && r.n ? `<strong>${r.w}-${r.l}${r.t ? '-' + r.t : ''}</strong> <span class="muted small">${pct(r.w + r.l ? r.w / (r.w + r.l) : null)}</span>` : '<span class="muted">—</span>');
+    const atsCell = (r) => (r && r.n ? `<strong>${r.w}-${r.l}${r.p ? '-' + r.p : ''}</strong> <span class="muted small">${pct(r.w + r.l ? r.w / (r.w + r.l) : null)}</span>` : '<span class="muted">—</span>');
+    const teamErr = (t) => (t.error ? `<div class="alert error small">${esc(t.abbr)}: ${esc(t.error)}</div>` : '');
+
+    const splitKeys = [...new Set([...(ta.splits || []), ...(th.splits || [])].map((x) => x.key))];
+    const findSplit = (t, k) => (t.splits || []).find((x) => x.key === k);
+    const splitRows = splitKeys
+      .map((k) => {
+        const sa = findSplit(ta, k), sh = findSplit(th, k);
+        const label = (sa || sh).label;
+        return `<tr><td>${esc(label)}</td>
+          <td class="${relevantSplit(k, ta, false) ? 'hl' : ''}">${wl(sa)}</td>
+          <td class="${relevantSplit(k, th, true) ? 'hl' : ''}">${wl(sh)}</td></tr>`;
+      })
+      .join('');
+
+    const atsKeys = [...new Set([...(ta.ats || []), ...(th.ats || [])].map((x) => x.key))];
+    const findAts = (t, k) => (t.ats || []).find((x) => x.key === k);
+    const atsRows = atsKeys
+      .map((k) => {
+        const xa = findAts(ta, k), xh = findAts(th, k);
+        return `<tr><td>${esc((xa || xh).label)}</td>
+          <td class="${relevantAts(k, a, false) ? 'hl' : ''}">${atsCell(xa)}</td>
+          <td class="${relevantAts(k, h, true) ? 'hl' : ''}">${atsCell(xh)}</td></tr>`;
+      })
+      .join('');
+    const ouCell = (t) =>
+      t.ou && t.ou.n
+        ? `<strong>${t.ou.over}-${t.ou.under}${t.ou.push ? '-' + t.ou.push : ''}</strong> <span class="muted small">overs ${pct(t.ou.over + t.ou.under ? t.ou.over / (t.ou.over + t.ou.under) : null)} · avg total ${t.ou.avgTotal}</span>`
+        : '<span class="muted">—</span>';
+
+    const conn = coachingConnections(sport, a, h);
+    const coachLine = (t) => (t.headCoach ? `${esc(t.headCoach.name)}${t.headCoach.experience != null ? ` <span class="muted small">(${plural(t.headCoach.experience, 'season')} as HC)</span>` : ''}` : '<span class="muted">not listed</span>');
+    const coachName = (c) => `${esc(c.role || 'Coach')} <strong>${esc(c.name)}</strong> <span class="muted small">(${esc(c.team)})</span>`;
+    const coaching = `
+      <h3 style="margin-top:18px">🧑‍🏫 Coaching</h3>
+      <table class="niche-table"><thead><tr><th></th><th>${esc(a)}</th><th>${esc(h)}</th></tr></thead>
+        <tbody><tr><td>Head coach (ESPN)</td><td>${coachLine(ta)}</td><td>${coachLine(th)}</td></tr></tbody></table>
+      ${conn.direct.length || conn.shared.length
+        ? `<ul class="conn-list">${conn.direct.map((d) => `<li>🔁 ${coachName(d.coach)} has history with <strong>${esc(teamName(sport, d.other))}</strong>: <span class="muted">${esc(d.coach.history)}</span></li>`).join('')}
+            ${conn.shared.map((x) => `<li>🤝 Both staffs have ties to the <strong>${esc(teamName(sport, x.team))}</strong>: ${x.coaches.map(coachName).join(', ')}</li>`).join('')}</ul>`
+        : `<div class="muted small">${conn.entered ? 'No coaching connections between these staffs.' : "No coordinators or assistants entered yet. Add them to spot coaches who've switched sides."}</div>`}
+      <button type="button" class="btn sm" data-edit-coaches style="margin-top:8px">✏️ Edit coaching staffs</button>`;
+
+    const recent = (t) => (t.recent || []).map((g) => `<span class="recent-chip ${g.result === 'W' ? 'w' : g.result === 'L' ? 'l' : ''}" title="${esc(fmtDate(g.date.slice(0, 10)))}">${g.result} ${g.home ? 'vs' : '@'} ${esc(g.opp)} ${g.teamScore}-${g.oppScore}</span>`).join(' ');
+    const seasons = ta.seasons || th.seasons || [];
+    return (
+      head + teamErr(ta) + teamErr(th) +
+      `<div class="niche-recent"><div><strong>${esc(a)}</strong> last 5: ${recent(ta) || '—'}</div><div><strong>${esc(h)}</strong> last 5: ${recent(th) || '—'}</div></div>
+      <h3 style="margin-top:14px">📅 Situational records</h3>
+      <div class="table-wrap"><table class="niche-table"><thead><tr><th></th><th>${esc(a)} (away)</th><th>${esc(h)} (home)</th></tr></thead><tbody>${splitRows}</tbody></table></div>
+      <h3 style="margin-top:18px">💵 Against the spread</h3>
+      <div class="table-wrap"><table class="niche-table"><thead><tr><th></th><th>${esc(a)}</th><th>${esc(h)}</th></tr></thead><tbody>${atsRows}
+        <tr><td>Over / Under (O-U)</td><td>${ouCell(ta)}</td><td>${ouCell(th)}</td></tr></tbody></table></div>
+      ${coaching}
+      <p class="muted small" style="margin:14px 0 0">Records cover the ${seasons.length ? `${seasons[0]}–${seasons[seasons.length - 1]}` : 'recent'} seasons (regular season + playoffs)${ta.games ? `: ${ta.games} ${esc(a)} games, ${th.games || 0} ${esc(h)} games` : ''}.
+        Against-the-spread and over/under use each team's last ${ta.atsGames || ATS_DEFAULT[league]} games with ESPN's closing line (${ta.gamesWithLine ?? '?'} and ${th.gamesWithLine ?? '?'} had a line).
+        ${sport === 'NFL' ? 'Primetime = kickoff 7 PM ET or later.' : ''} Source: ESPN.</p>`
+    );
+  }
+  const ATS_DEFAULT = { nfl: 40, nba: 30 };
+
+  function coachEditorHtml(ctx) {
+    const { sport, a, h } = ctx;
+    const teamBlock = (abbr) => `<div class="coach-team" data-team="${esc(abbr)}"><h3>${esc(teamName(sport, abbr))}</h3>
+      <div class="coach-rows">${staffOf(sport, abbr).map((c) => coachRowHtml(c)).join('')}</div>
+      <button type="button" class="btn sm" data-add-coach="${esc(abbr)}">+ Add coach</button></div>`;
+    return `<div class="card-head"><h2>✏️ Coaching staffs</h2><button type="button" class="btn sm" data-back>← Back to stats</button></div>
+      <p class="muted small">Add coordinators and other coaches, with every team they've worked for (e.g. <em>"BUF 2018–21 (QB coach), SF 2022–24"</em>). Team abbreviations or names both work. Niche Stats flags coaches who used to work for the opponent, and staffs with a shared former team.</p>
+      <div class="grid cols-2">${teamBlock(a)}${teamBlock(h)}</div>
+      <div class="modal-actions"><button type="button" class="btn" data-back>Cancel</button><button type="button" class="btn primary" data-save-coaches>Save staffs</button></div>`;
+  }
+  const coachRowHtml = (c = {}) => `<div class="coach-row">
+      <select data-k="role">${COACH_ROLES.map((r) => `<option ${r === (c.role || 'Offensive Coordinator') ? 'selected' : ''}>${esc(r)}</option>`).join('')}</select>
+      <input data-k="name" value="${esc(c.name || '')}" placeholder="Name">
+      <input data-k="history" value="${esc(c.history || '')}" placeholder="Previous teams, e.g. BUF 2018-21, SF 2022-24" class="full">
+      <button type="button" class="btn sm danger" data-remove-coach title="Remove">✕</button></div>`;
+
+  function openNicheStats(ctx) {
+    let mode = 'stats';
+    const draw = () => {
+      modalForm.innerHTML = mode === 'stats' ? nicheHtml(ctx) : coachEditorHtml(ctx);
+      modalForm.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => modal.close()));
+      const edit = modalForm.querySelector('[data-edit-coaches]');
+      if (edit) edit.addEventListener('click', () => ((mode = 'coaches'), draw()));
+      modalForm.querySelectorAll('[data-back]').forEach((b) => b.addEventListener('click', () => ((mode = 'stats'), draw())));
+      modalForm.querySelectorAll('[data-add-coach]').forEach((b) =>
+        b.addEventListener('click', () => {
+          b.previousElementSibling.insertAdjacentHTML('beforeend', coachRowHtml());
+          b.previousElementSibling.lastElementChild.querySelector('[data-k=name]').focus();
+        })
+      );
+      modalForm.onclick = (e) => {
+        const rm = e.target.closest('[data-remove-coach]');
+        if (rm) rm.closest('.coach-row').remove();
+      };
+      const save = modalForm.querySelector('[data-save-coaches]');
+      if (save)
+        save.addEventListener('click', async () => {
+          try {
+            for (const block of modalForm.querySelectorAll('.coach-team')) {
+              const id = `${ctx.sport}-${block.dataset.team}`;
+              const staff = [...block.querySelectorAll('.coach-row')]
+                .map((row) => Object.fromEntries([...row.querySelectorAll('[data-k]')].map((el) => [el.dataset.k, el.value.trim()])))
+                .filter((c) => c.name)
+                .map((c) => ({ id: uid(), ...c }));
+              const saved = await api('PUT', '/api/coaches/' + encodeURIComponent(id), { staff });
+              state.coaches = state.coaches.filter((c) => c.id !== id).concat(saved);
+            }
+            toast('Coaching staffs saved');
+            mode = 'stats';
+            draw();
+          } catch (err) {
+            alert(err.message);
+          }
+        });
+    };
+    modalForm.onsubmit = (e) => e.preventDefault();
+    modal.classList.add('wide');
+    draw();
+    modal.showModal();
+    loadNiche(ctx.league, ctx.a, ctx.h).then(() => {
+      if (modal.open && mode === 'stats') draw();
+    });
+  }
+  modal.addEventListener('close', () => {
+    modal.classList.remove('wide');
+    modalForm.onclick = null;
+  });
 
   // ---------- notes ----------
 

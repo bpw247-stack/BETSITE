@@ -12,6 +12,7 @@ A personal website for tracking your sports bets: picks, money placed, wins and 
 - **Team success rates**: record, win %, money staked, P/L and ROI for every team you've backed, and for teams you've bet *against*. Each team has its own page with its bets, live injuries and notes.
 - **Matchups**: upcoming NFL or NBA games (today, or the next 3, 7 or 14 days) with kickoff/tip time, TV, records, the betting line and over/under, and live scores. Each game lists its notable injuries. For the NFL that's every QB plus RB/WR/TE not on a season-long list, and for the NBA it's anyone out, doubtful, questionable or day-to-day; a toggle shows all injuries. NFL weeks also get a **QB watch** table. Games you have pending bets or parlay legs on are highlighted, and each game has buttons to log a bet on either team with the matchup pre-filled.
 - **Previous matchups** (on every Matchups game card): the last 5 meetings between the two teams over recent seasons, playoffs included. You get the series record, average total points compared with this game's over/under, and average margin. Each game is tagged with storylines: 💥 blowouts, ⏱️ close games, ⚡ offensive dominance (35+ pts or 450+ yds in the NFL; 130+ pts or 55%+ FG in the NBA) and 🛡️ defensive dominance (allowed 10 or fewer pts, or forced 3+ turnovers; 95 or fewer pts in the NBA). 🔥 marks big individual games: 300+ passing yards or 3+ TD passes, 100+ rushing or receiving yards, or 2+ TDs; 30+ points, 15+ rebounds or 10+ assists in the NBA.
+- **Niche Stats** (📊 button on every Matchups game): side-by-side situational records for both teams over the last four NFL seasons (two in the NBA). For the NFL that's overall, home/away, primetime (7 PM ET or later), Monday, Thursday and Sunday night, division games, after a loss or win, playoffs and the last 10. The NBA gets national-TV games and the second night of back-to-backs instead of the night-game rows. It also shows the record against the spread (overall, as favorite or underdog, home/away, primetime, last 10) and the over/under record, worked out from ESPN's closing lines. Rows that apply to this game are highlighted, for example Monday Night for an MNF game or underdog for the team getting points. Head coaches come from ESPN. You can add coordinators and assistants with their previous teams, and the site flags anyone who used to work for the opponent and any former team the two staffs share.
 - **Injury reports**: live NFL and NBA injury lists from ESPN's public feed, cached for 15 minutes. You can filter by team, status or player, or show only teams you've bet on. Teams with pending bets are highlighted, and injuries also appear on each bet and team page.
 - **Notes**:
   - A **general notes** page with titles, tags, pinning and search.
@@ -61,6 +62,7 @@ lib/schedule.js    Normalizes ESPN's scoreboard (upcoming games)
 lib/h2h.js         Past meetings, box-score leaders and notable-performance rules
 lib/updater.js     Checks GitHub for new versions and installs them (never touches data/)
 lib/unzip.js       Tiny dependency-free ZIP reader used by the updater
+lib/niche.js       Situational splits, primetime slots (US Eastern), ATS / O-U from closing lines
 public/            Frontend (vanilla JS, no build step)
   index.html
   app.js           Views: dashboard, bets, props, teams, injuries, notes, backup
@@ -74,11 +76,12 @@ test/              node:test suites
 
 | Method | Path | |
 |---|---|---|
-| GET/POST | `/api/bets`, `/api/notes`, `/api/teamNotes` | list / create |
+| GET/POST | `/api/bets`, `/api/notes`, `/api/teamNotes`, `/api/coaches` | list / create |
 | GET/PUT/DELETE | `/api/{collection}/{id}` | read / update / delete |
 | GET | `/api/injuries/nfl`, `/api/injuries/nba` | injury report (`?refresh` skips the cache) |
 | GET | `/api/schedule/nfl`, `/api/schedule/nba` | upcoming games (`?days=1-21`, `?refresh`) |
 | GET | `/api/h2h/{nfl,nba}?a=KC&b=BUF` | previous meetings with leaders and storylines (`?n=1-10`) |
+| GET | `/api/niche/{nfl,nba}?a=BUF&b=KC` | situational, ATS and O/U records for both teams (`?refresh`) |
 | GET | `/api/version` | installed version |
 | GET | `/api/update/check` | newest version on GitHub and what changed (`?refresh`) |
 | POST | `/api/update/apply` | install a version (`{ "sha": "…" }`); restarts when run via `npm start` |

@@ -301,3 +301,19 @@ td .sub.show-sm-block { display: none; }
 .spinner { width: 28px; height: 28px; margin: 8px auto 0; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 640px) { .update-banner { padding: 10px 16px; } }
+
+/* ---------- niche stats ---------- */
+dialog.wide { width: min(980px, calc(100vw - 32px)); }
+.niche-table { width: 100%; }
+.niche-table th:not(:first-child), .niche-table td:not(:first-child) { width: 36%; }
+.niche-table td.hl { background: var(--warn-bg); }
+.hl-key { background: var(--warn-bg); padding: 0 6px; border-radius: 4px; }
+.niche-recent { display: grid; gap: 4px; font-size: .85rem; }
+.recent-chip { display: inline-block; font-size: .76rem; padding: 1px 6px; border-radius: 6px; background: var(--neutral-bg); color: var(--text-2); margin: 1px 0; }
+.recent-chip.w { background: var(--good-bg); color: var(--good); }
+.recent-chip.l { background: var(--bad-bg); color: var(--bad); }
+.conn-list { margin: 8px 0 0; padding-left: 4px; list-style: none; }
+.conn-list li { margin-bottom: 6px; font-size: .9rem; }
+.coach-team h3 { margin-top: 4px; }
+.coach-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 6px; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.coach-row .full { grid-column: 1 / 3; }

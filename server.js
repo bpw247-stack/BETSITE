@@ -13,6 +13,7 @@ const { parseEspnInjuries } = require('./lib/injuries');
 const { parseEspnScoreboard, espnDay } = require('./lib/schedule');
 const { seasonsToSearch, meetingsFromSchedule, parseGameSummary, summarizeH2H } = require('./lib/h2h');
 const { createUpdater } = require('./lib/updater');
+const niche = require('./lib/niche');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -28,13 +29,13 @@ const updater = createUpdater({ appDir: __dirname, dataDir: path.dirname(DATA_FI
 let updateCheckCache = null;
 const BOOT_ID = crypto.randomUUID(); // changes on every restart, so the page can tell the new server is up
 
-const COLLECTIONS = ['bets', 'notes', 'teamNotes'];
+const COLLECTIONS = ['bets', 'notes', 'teamNotes', 'coaches'];
 const LEAGUE_PATHS = { nfl: 'football/nfl', nba: 'basketball/nba' };
 
 // ---------- storage ----------
 
 function emptyDb() {
-  return { bets: [], notes: [], teamNotes: [] };
+  return { bets: [], notes: [], teamNotes: [], coaches: [] };
 }
 
 function loadDb() {
@@ -233,6 +234,106 @@ async function getH2H(league, a, b, n, force) {
   return data;
 }
 
+// ---------- niche stats ----------
+
+const NICHE_TTL_MS = 6 * 60 * 60 * 1000;
+const nicheCache = {}; // `${league}:${team}` -> { at, data }
+const ATS_WINDOW = { nfl: 40, nba: 30 }; // most recent games to look up closing lines for
+
+// Closing lines of finished games never change, so keep them on disk between restarts.
+const lineCaches = {};
+function lineCache(league) {
+  if (!lineCaches[league]) {
+    const file = path.join(path.dirname(DATA_FILE), 'cache', `lines-${league}.json`);
+    let map = {};
+    try {
+      map = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {}
+    lineCaches[league] = {
+      map,
+      save() {
+        try {
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          fs.writeFileSync(file, JSON.stringify(map));
+        } catch (err) {
+          console.warn('Could not save line cache:', err.message);
+        }
+      },
+    };
+  }
+  return lineCaches[league];
+}
+
+// Run async tasks with limited concurrency (be gentle with ESPN).
+async function pool(items, limit, fn) {
+  const out = new Array(items.length);
+  let i = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (i < items.length) {
+        const k = i++;
+        out[k] = await fn(items[k]);
+      }
+    })
+  );
+  return out;
+}
+
+async function getTeamNiche(league, team, force) {
+  const key = `${league}:${team}`;
+  const cached = nicheCache[key];
+  if (!force && cached && Date.now() - cached.at < NICHE_TTL_MS) return cached.data;
+
+  const seasons = niche.nicheSeasons(league);
+  const lookups = seasons.flatMap((season) => [2, 3].map((type) => ({ season, type })));
+  const slug = encodeURIComponent(team.toLowerCase());
+  const [schedules, roster] = await Promise.all([
+    Promise.allSettled(lookups.map(({ season, type }) => espnJson(league, `teams/${slug}/schedule?season=${season}&seasontype=${type}`))),
+    espnJson(league, `teams/${slug}/roster`).catch(() => null),
+  ]);
+  if (schedules.every((r) => r.status === 'rejected')) throw schedules[0].reason;
+
+  const seen = new Set();
+  const games = schedules
+    .filter((r) => r.status === 'fulfilled')
+    .flatMap((r) => niche.gamesFromSchedule(r.value, team))
+    .filter((g) => !seen.has(g.id) && seen.add(g.id))
+    .sort((x, y) => x.date.localeCompare(y.date));
+
+  // closing lines for the most recent games
+  const cache = lineCache(league);
+  const recent = games.slice(-ATS_WINDOW[league]);
+  const missing = recent.filter((g) => !(g.id in cache.map));
+  if (missing.length) {
+    await pool(missing, 6, async (g) => {
+      try {
+        cache.map[g.id] = niche.parseGameLine(await espnJson(league, `summary?event=${encodeURIComponent(g.id)}`));
+      } catch {
+        /* leave uncached; try again next time */
+      }
+    });
+    cache.save();
+  }
+  for (const g of recent) g.line = cache.map[g.id] || null;
+
+  const ats = niche.atsSplits(recent, league, team);
+  const data = {
+    abbr: team,
+    headCoach: niche.headCoachFromRoster(roster),
+    division: niche.divisionOf(league, team),
+    seasons,
+    games: games.length,
+    splits: niche.situationalSplits(games, league, team),
+    ats: ats.ats,
+    ou: ats.ou,
+    atsGames: recent.length,
+    gamesWithLine: ats.gamesWithLine,
+    recent: games.slice(-5).reverse().map(({ date, home, opp, teamScore, oppScore, result }) => ({ date, home, opp, teamScore, oppScore, result })),
+  };
+  nicheCache[key] = { at: Date.now(), data };
+  return data;
+}
+
 // ---------- API ----------
 
 async function handleApi(req, res, url) {
@@ -311,6 +412,25 @@ async function handleApi(req, res, url) {
     }
   }
 
+  if (resource === 'niche') {
+    const league = (id || '').toLowerCase();
+    const a = String(url.searchParams.get('a') || '').toUpperCase();
+    const b = String(url.searchParams.get('b') || '').toUpperCase();
+    if (!LEAGUE_PATHS[league]) return send(res, 404, { error: 'Unknown league' });
+    if (!/^[A-Z]{2,4}$/.test(a) || !/^[A-Z]{2,4}$/.test(b) || a === b) return send(res, 400, { error: 'Pass two different team abbreviations as ?a=&b=' });
+    const force = url.searchParams.has('refresh');
+    const [ra, rb] = await Promise.allSettled([getTeamNiche(league, a, force), getTeamNiche(league, b, force)]);
+    if (ra.status === 'rejected' && rb.status === 'rejected') return send(res, 502, { error: `Could not load niche stats: ${ra.reason.message}` });
+    return send(res, 200, {
+      league,
+      fetchedAt: new Date().toISOString(),
+      teams: {
+        [a]: ra.status === 'fulfilled' ? ra.value : { abbr: a, error: ra.reason.message },
+        [b]: rb.status === 'fulfilled' ? rb.value : { abbr: b, error: rb.reason.message },
+      },
+    });
+  }
+
   if (resource === 'export' && req.method === 'GET') {
     return send(res, 200, db, { 'Content-Disposition': 'attachment; filename="betsite-backup.json"' });
   }
@@ -341,8 +461,8 @@ async function handleApi(req, res, url) {
   }
 
   const idx = list.findIndex((x) => x.id === id);
-  if (req.method === 'PUT' && idx === -1 && resource === 'teamNotes') {
-    // team notes are keyed by "league-abbr" and created on first save
+  if (req.method === 'PUT' && idx === -1 && (resource === 'teamNotes' || resource === 'coaches')) {
+    // team notes and coaching staffs are keyed by "SPORT-ABBR" and created on first save
     const body = await readBody(req);
     const now = new Date().toISOString();
     const item = { ...body, id, createdAt: now, updatedAt: now };

@@ -4,7 +4,7 @@
   "description": "Personal sports betting tracker: bets, picks, P/L, prop & team success rates, NFL/NBA injury reports, and notes.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node start.js",
     "test": "node --test test/*.test.js"
   },
   "engines": {

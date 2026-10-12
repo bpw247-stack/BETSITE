@@ -18,12 +18,14 @@
       <a href="#/matchups" data-view="matchups">Matchups</a>
       <a href="#/injuries" data-view="injuries">Injuries</a>
       <a href="#/notes" data-view="notes">Notes</a>
-      <a href="#/settings" data-view="settings">Backup</a>
+      <a href="#/settings" data-view="settings">Settings</a>
     </nav>
     <button class="btn primary" id="addBetBtn">+ Add bet</button>
   </header>
 
+  <div id="updateBanner" class="update-banner" role="status" hidden></div>
   <main id="app" class="container" aria-live="polite"></main>
+  <div id="overlay" class="overlay" hidden><div class="overlay-box"></div></div>
 
   <dialog id="modal">
     <form method="dialog" id="modalForm"></form>

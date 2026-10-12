@@ -19,6 +19,8 @@ A personal website for tracking your sports bets: picks, money placed, wins and 
   - A **notes log on every team** (works before you've bet on the team).
   - The Notes page also shows a searchable feed of all bet and team notes.
 - **Backup**: export everything as JSON, restore from a backup, or download your bets as CSV.
+- **One-click updates**: the site checks GitHub for new versions (on start and every 3 hours). When one exists, a banner offers **Update now**, and **Settings** shows what's new. Updating backs up `data/db.json` to `data/backups/`, installs the new code without touching `data/`, and restarts the site automatically.
+- **Auto-refresh**: while the site is open, injuries refresh every 15 minutes and schedules every 10 minutes. During live games they refresh every minute. The page redraws quietly, and waits if you're typing or have a form open.
 
 ## Running it
 
@@ -52,10 +54,13 @@ npm test
 ## Project layout
 
 ```
-server.js          HTTP server: static files, JSON storage, REST API, injury proxy
+start.js           Launcher used by `npm start`; restarts server.js after an in-app update
+server.js          HTTP server: static files, JSON storage, REST API, ESPN proxies, updater endpoints
 lib/injuries.js    Normalizes ESPN's injury feed
 lib/schedule.js    Normalizes ESPN's scoreboard (upcoming games)
 lib/h2h.js         Past meetings, box-score leaders and notable-performance rules
+lib/updater.js     Checks GitHub for new versions and installs them (never touches data/)
+lib/unzip.js       Tiny dependency-free ZIP reader used by the updater
 public/            Frontend (vanilla JS, no build step)
   index.html
   app.js           Views: dashboard, bets, props, teams, injuries, notes, backup
@@ -74,5 +79,8 @@ test/              node:test suites
 | GET | `/api/injuries/nfl`, `/api/injuries/nba` | injury report (`?refresh` skips the cache) |
 | GET | `/api/schedule/nfl`, `/api/schedule/nba` | upcoming games (`?days=1-21`, `?refresh`) |
 | GET | `/api/h2h/{nfl,nba}?a=KC&b=BUF` | previous meetings with leaders and storylines (`?n=1-10`) |
+| GET | `/api/version` | installed version |
+| GET | `/api/update/check` | newest version on GitHub and what changed (`?refresh`) |
+| POST | `/api/update/apply` | install a version (`{ "sha": "…" }`); restarts when run via `npm start` |
 | GET | `/api/export` | full JSON backup |
 | POST | `/api/import` | restore (replaces all data) |

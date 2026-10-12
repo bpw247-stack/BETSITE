@@ -286,3 +286,18 @@ td .sub.show-sm-block { display: none; }
 .h2h-note.blowout { background: var(--bad-bg); color: var(--bad); }
 .h2h-big { font-size: .85rem; margin-top: 4px; }
 .h2h-leaders { margin-top: 3px; line-height: 1.4; }
+
+/* ---------- updates ---------- */
+.update-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 10px 24px; background: var(--good-bg); color: var(--text); border-bottom: 1px solid var(--border); font-size: .92rem;
+}
+.update-banner[hidden], .overlay[hidden] { display: none; }
+.alert.ok { background: var(--good-bg); color: var(--good); }
+.changes { margin: 6px 0 0; padding-left: 18px; }
+.changes li { margin-bottom: 4px; }
+.overlay { position: fixed; inset: 0; z-index: 100; background: rgba(0, 0, 0, .5); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.overlay-box { background: var(--surface); color: var(--text); border-radius: 12px; padding: 24px; max-width: 440px; text-align: center; box-shadow: 0 10px 40px rgba(0, 0, 0, .3); }
+.spinner { width: 28px; height: 28px; margin: 8px auto 0; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 640px) { .update-banner { padding: 10px 16px; } }

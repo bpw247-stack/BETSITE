@@ -12,6 +12,7 @@ const crypto = require('crypto');
 const { parseEspnInjuries } = require('./lib/injuries');
 const { parseEspnScoreboard, espnDay } = require('./lib/schedule');
 const { seasonsToSearch, meetingsFromSchedule, parseGameSummary, summarizeH2H } = require('./lib/h2h');
+const { createUpdater } = require('./lib/updater');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -19,6 +20,13 @@ const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'db.json
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const INJURY_TTL_MS = 15 * 60 * 1000;
 const SCHEDULE_TTL_MS = 10 * 60 * 1000;
+const LIVE_SCHEDULE_TTL_MS = 60 * 1000; // while a game is in progress, keep scores fresh
+const UPDATE_CHECK_TTL_MS = 10 * 60 * 1000;
+const RESTART_CODE = 75; // start.js relaunches the server when it exits with this code
+
+const updater = createUpdater({ appDir: __dirname, dataDir: path.dirname(DATA_FILE) });
+let updateCheckCache = null;
+const BOOT_ID = crypto.randomUUID(); // changes on every restart, so the page can tell the new server is up
 
 const COLLECTIONS = ['bets', 'notes', 'teamNotes'];
 const LEAGUE_PATHS = { nfl: 'football/nfl', nba: 'basketball/nba' };
@@ -103,10 +111,11 @@ function serveStatic(req, res, pathname) {
     if (err) {
       // SPA fallback
       return fs.readFile(path.join(PUBLIC_DIR, 'index.html'), (e2, html) =>
-        e2 ? send(res, 404, 'Not found') : send(res, 200, html, { 'Content-Type': MIME['.html'] })
+        e2 ? send(res, 404, 'Not found') : send(res, 200, html, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-cache' })
       );
     }
-    send(res, 200, data, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
+    // no-cache: the browser revalidates every time, so a freshly installed version shows up immediately
+    send(res, 200, data, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
   });
 }
 
@@ -132,7 +141,8 @@ const scheduleCache = {}; // `${league}:${days}` -> { at, data }
 async function getSchedule(league, days, force) {
   const key = `${league}:${days}`;
   const cached = scheduleCache[key];
-  if (!force && cached && Date.now() - cached.at < SCHEDULE_TTL_MS) return { ...cached.data, cached: true };
+  const ttl = cached && cached.data.games.some((g) => g.state === 'in') ? LIVE_SCHEDULE_TTL_MS : SCHEDULE_TTL_MS;
+  if (!force && cached && Date.now() - cached.at < ttl) return { ...cached.data, cached: true };
   const now = new Date();
   const dayList = Array.from({ length: days }, (_, i) => espnDay(new Date(now.getTime() + i * 86400000)));
   const range = `${dayList[0]}-${dayList[dayList.length - 1]}`;
@@ -265,6 +275,39 @@ async function handleApi(req, res, url) {
       return send(res, 200, await getH2H(league, a, b, n, url.searchParams.has('refresh')));
     } catch (err) {
       return send(res, 502, { error: `Could not load previous matchups: ${err.message}` });
+    }
+  }
+
+  if (resource === 'version' && req.method === 'GET') {
+    const v = updater.installed();
+    return send(res, 200, { sha: v ? v.sha : null, installedAt: v ? v.installedAt : null, boot: BOOT_ID, autoRestart: process.env.BETSITE_LAUNCHER === '1' });
+  }
+
+  if (resource === 'update' && id === 'check' && req.method === 'GET') {
+    const force = url.searchParams.has('refresh');
+    if (force || !updateCheckCache || Date.now() - updateCheckCache.at > UPDATE_CHECK_TTL_MS) {
+      try {
+        updateCheckCache = { at: Date.now(), data: await updater.check() };
+      } catch (err) {
+        return send(res, 502, { error: err.message });
+      }
+    }
+    return send(res, 200, { ...updateCheckCache.data, autoRestart: process.env.BETSITE_LAUNCHER === '1' });
+  }
+
+  if (resource === 'update' && id === 'apply' && req.method === 'POST') {
+    const body = await readBody(req);
+    try {
+      const result = await updater.apply(body.sha);
+      updateCheckCache = null;
+      const autoRestart = process.env.BETSITE_LAUNCHER === '1';
+      send(res, 200, { ok: true, ...result, restarting: autoRestart });
+      console.log(`Installed BetSite version ${result.sha.slice(0, 7)} (${result.files} files).`);
+      if (autoRestart) setTimeout(() => process.exit(RESTART_CODE), 300);
+      else console.log('Restart BetSite to finish the update: press Control+C, then run npm start.');
+      return;
+    } catch (err) {
+      return send(res, 500, { error: `Update failed: ${err.message}` });
     }
   }
 

@@ -806,12 +806,13 @@
 
   // ---------- injuries ----------
 
+  // force: true = bypass the server cache too; 'background' = refetch quietly, keeping old data on screen
   async function loadInjuries(league, force) {
     const cur = state.injuries[league];
     if (cur && cur.loading) return cur.promise;
     if (cur && cur.data && !force) return cur;
-    const entry = { loading: true };
-    entry.promise = api('GET', `/api/injuries/${league}${force ? '?refresh=1' : ''}`)
+    const entry = { loading: true, data: cur && cur.data };
+    entry.promise = api('GET', `/api/injuries/${league}${force === true ? '?refresh=1' : ''}`)
       .then((data) => Object.assign(entry, { loading: false, data, error: data.stale ? data.error : null }))
       .catch((err) => Object.assign(entry, { loading: false, error: err.message, data: cur && cur.data }));
     state.injuries[league] = entry;
@@ -882,7 +883,7 @@
     const abbrOf = (t) => (window.LEAGUES[sport].find(([a, n]) => a === t.abbr || n.toLowerCase() === t.team.toLowerCase()) || [t.abbr])[0];
 
     let body;
-    if (!entry || entry.loading) {
+    if (!entry || (entry.loading && !entry.data)) {
       body = '<div class="empty">Loading injury report…</div>';
       if (!entry) loadInjuries(league).then(render);
     } else if (!entry.data) {
@@ -903,7 +904,7 @@
       const open = team || q || teams.length <= 4;
       body =
         (entry.error ? `<div class="alert">Showing cached data: ${esc(entry.error)}</div>` : '') +
-        `<div class="muted small" style="margin-bottom:12px">${total} players on ${teams.length} teams · Source: ESPN · updated ${fmtDateTime(entry.data.fetchedAt)}</div>` +
+        `<div class="muted small" style="margin-bottom:12px">${total} players on ${teams.length} teams · Source: ESPN · updated ${fmtDateTime(entry.data.fetchedAt)} · refreshes automatically</div>` +
         (teams.length
           ? teams
               .map(
@@ -972,8 +973,8 @@
     const cur = state.schedule[key];
     if (cur && cur.loading) return cur.promise;
     if (cur && cur.data && !force) return Promise.resolve(cur);
-    const entry = { loading: true };
-    entry.promise = api('GET', `/api/schedule/${league}?days=${days}${force ? '&refresh=1' : ''}`)
+    const entry = { loading: true, data: cur && cur.data };
+    entry.promise = api('GET', `/api/schedule/${league}?days=${days}${force === true ? '&refresh=1' : ''}`)
       .then((data) => Object.assign(entry, { loading: false, data, error: data.stale ? data.error : null }))
       .catch((err) => Object.assign(entry, { loading: false, error: err.message, data: cur && cur.data }));
     state.schedule[key] = entry;
@@ -1084,7 +1085,7 @@
     const picksFor = (h, a) => pendingPicks.filter((x) => [h, a].includes(x.team) || [h, a].includes(x.opponent));
 
     let body;
-    if (!sched || sched.loading) {
+    if (!sched || (sched.loading && !sched.data)) {
       body = '<div class="empty">Loading schedule…</div>';
     } else if (!sched.data) {
       body = `<div class="alert error">${esc(sched.error)}</div><p class="muted">The schedule comes from ESPN's public API. Make sure the server has internet access, then hit Refresh.</p>`;
@@ -1123,7 +1124,7 @@
             <span class="gt-name">${prefix}${window.LEAGUES[sport].some(([x]) => x === code) ? `<a href="#/team/${sport}/${encodeURIComponent(code)}">${esc(t.name)}</a>` : esc(t.name)}</span>
             <span class="muted small">${esc(t.record)}</span>${live && t.score !== '' ? `<strong class="gt-score">${esc(t.score)}</strong>` : ''}</div>`;
         const injBlock = (code, t) => {
-          if (!inj || inj.loading) return `<div class="muted small">Loading injuries…</div>`;
+          if (!inj || (inj.loading && !inj.data)) return `<div class="muted small">Loading injuries…</div>`;
           if (!inj.data) return '';
           const it = findInjuryTeam(injTeams, sport, code);
           const list = notableInjuries(sport, it ? it.players : [], showAll);
@@ -1161,7 +1162,7 @@
         (games.length
           ? [...byDay.entries()].map(([day, list]) => `<h2 class="day-head">${esc(day)} <span class="muted small">${plural(list.length, 'game')}</span></h2><div class="game-grid">${list.map(card).join('')}</div>`).join('')
           : `<div class="card empty">${mine ? "No upcoming games involving your pending bets." : `No upcoming ${sport} games in the next ${plural(days, 'day')}.`}</div>`) +
-        `<div class="muted small" style="margin-top:12px">Source: ESPN · schedule updated ${fmtDateTime(sched.data.fetchedAt)}${inj && inj.data ? ` · injuries updated ${fmtDateTime(inj.data.fetchedAt)}` : ''}</div>`;
+        `<div class="muted small" style="margin-top:12px">Source: ESPN · schedule updated ${fmtDateTime(sched.data.fetchedAt)}${inj && inj.data ? ` · injuries updated ${fmtDateTime(inj.data.fetchedAt)}` : ''} · refreshes automatically (every minute during live games)</div>`;
     }
 
     const dayOpts = [[1, 'Today'], [3, 'Next 3 days'], [7, 'Next 7 days'], [14, 'Next 14 days']];
@@ -1329,10 +1330,32 @@
 
   // ---------- settings / backup ----------
 
+  function updatesCardHtml() {
+    const u = state.update;
+    const short = (sha) => (sha ? sha.slice(0, 7) : 'unknown');
+    let status;
+    if (state.updateError && !u) status = `<div class="alert error">${esc(state.updateError)}</div>`;
+    else if (!u) status = '<div class="muted">Checking for updates…</div>';
+    else if (u.upToDate) status = `<div class="alert ok">✅ You're on the latest version.</div>`;
+    else if (u.unknown) status = `<div class="alert">This copy doesn't know its version yet. Install the latest once to turn on one-click updates.</div>`;
+    else status = `<div class="alert">🎉 A new version is available.</div>`;
+    const changes = u && !u.upToDate && u.changes.length
+      ? `<h3 style="margin-top:12px">What's new</h3><ul class="changes">${u.changes.map((c) => `<li><strong>${esc(c.message)}</strong> <span class="muted small">${c.date ? fmtDate(c.date.slice(0, 10)) : ''}</span></li>`).join('')}</ul>`
+      : '';
+    return `<div class="card" id="updatesCard"><div class="card-head"><h2>Updates</h2><span class="muted small">${u ? `checked ${fmtDateTime(u.checkedAt)}` : ''}</span></div>
+      ${status}
+      <dl class="kv"><dt>Installed version</dt><dd><code>${esc(short(u ? u.installed : state.version && state.version.sha))}</code>${u && u.installedAt ? ` <span class="muted small">installed ${fmtDateTime(u.installedAt)}</span>` : ''}</dd>
+        ${u ? `<dt>Latest version</dt><dd><code>${esc(short(u.latest))}</code> <span class="muted small">${u.latestDate ? fmtDateTime(u.latestDate) : ''}</span></dd>` : ''}</dl>
+      ${changes}
+      <div class="btn-row" style="margin-top:12px">${u && !u.upToDate ? `<button class="btn primary" data-update-now>${u.unknown ? 'Install latest' : 'Update now'}</button>` : ''}<button class="btn" id="checkUpdates">Check for updates</button></div>
+      <p class="muted small" style="margin-bottom:0">Updates come from GitHub. Your bets and notes in <code>data/</code> are never changed, and a backup copy is saved in <code>data/backups/</code> before every update.</p></div>`;
+  }
+
   function renderSettings() {
     app.innerHTML = `
-      <div class="page-head"><div><h1>Backup & data</h1><div class="muted">Your data is stored on this server in <code>data/db.json</code>.</div></div></div>
-      <div class="grid cols-2">
+      <div class="page-head"><div><h1>Settings & backup</h1><div class="muted">Your data is stored on this computer in <code>data/db.json</code>.</div></div></div>
+      ${updatesCardHtml()}
+      <div class="grid cols-2 section">
         <div class="card"><h2>Export</h2><p class="muted">Download everything (bets, notes, team notes) as JSON, or your bets as a CSV spreadsheet.</p>
           <div class="btn-row"><a class="btn primary" href="/api/export" download="betsite-backup.json">Download JSON backup</a><button class="btn" id="csvBtn">Download bets CSV</button></div></div>
         <div class="card"><h2>Import</h2><p class="muted">Restore from a JSON backup. <strong>This replaces all current data.</strong></p>
@@ -1343,6 +1366,14 @@
         <dt>Bet notes</dt><dd>${state.bets.reduce((n, b) => n + (b.notes || []).length, 0)}</dd>
         <dt>Team notes</dt><dd>${state.teamNotes.reduce((n, t) => n + (t.entries || []).length, 0)}</dd></dl></div>`;
     document.getElementById('csvBtn').addEventListener('click', downloadCsv);
+    document.getElementById('checkUpdates').addEventListener('click', async () => {
+      state.update = null;
+      render();
+      await checkForUpdate(true);
+      if (parseHash().parts[0] === 'settings') render();
+      toast(state.update && state.update.upToDate ? "You're up to date" : state.update ? 'Update available' : 'Could not check for updates');
+    });
+    app.querySelectorAll('[data-update-now]').forEach((b) => b.addEventListener('click', installUpdate));
     document.getElementById('importFile').addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
@@ -1631,7 +1662,158 @@
 
   document.getElementById('addBetBtn').addEventListener('click', () => openBetForm());
 
+  // ---------- updates ----------
+
+  const overlay = document.getElementById('overlay');
+  function showOverlay(title, html, closable) {
+    overlay.querySelector('.overlay-box').innerHTML = `<h2>${esc(title)}</h2><p>${html}</p>${closable ? '<button class="btn" data-close-overlay>Close</button>' : '<div class="spinner"></div>'}`;
+    overlay.hidden = false;
+    const c = overlay.querySelector('[data-close-overlay]');
+    if (c) c.addEventListener('click', () => (overlay.hidden = true));
+  }
+
+  async function checkForUpdate(force) {
+    try {
+      state.update = await api('GET', '/api/update/check' + (force ? '?refresh=1' : ''));
+      state.updateError = null;
+    } catch (err) {
+      state.updateError = err.message;
+    }
+    renderUpdateBanner();
+    return state.update;
+  }
+
+  function renderUpdateBanner() {
+    const el = document.getElementById('updateBanner');
+    const u = state.update;
+    if (!u || u.upToDate || state.updateDismissed === u.latest) {
+      el.hidden = true;
+      return;
+    }
+    const first = u.changes[0];
+    el.innerHTML = u.unknown
+      ? `<span>🔄 <strong>Turn on one-click updates:</strong> install the latest version of BetSite once. Your bets are kept.</span>
+         <span class="btn-row"><button class="btn sm primary" data-update-now>Install latest</button><button class="btn sm" data-update-later>Later</button></span>`
+      : `<span>🎉 <strong>New version of BetSite available</strong>${first ? `: ${esc(first.message)}${u.changes.length > 1 ? ` <span class="muted">(+${u.changes.length - 1} more)</span>` : ''}` : ''}</span>
+         <span class="btn-row"><a class="btn sm" href="#/settings">What's new</a><button class="btn sm primary" data-update-now>Update now</button><button class="btn sm" data-update-later>Later</button></span>`;
+    el.hidden = false;
+    el.querySelector('[data-update-now]').addEventListener('click', installUpdate);
+    el.querySelector('[data-update-later]').addEventListener('click', () => {
+      state.updateDismissed = u.latest;
+      renderUpdateBanner();
+    });
+  }
+
+  async function installUpdate() {
+    const u = state.update;
+    if (!u) return;
+    if (!confirm('Install the latest version of BetSite now?\n\nYour bets and notes are kept, and a backup copy is saved first.')) return;
+    let before = null;
+    try {
+      before = (await api('GET', '/api/version')).boot;
+    } catch {}
+    showOverlay('Installing update…', 'Downloading the new version from GitHub. Please keep this tab open.');
+    let res;
+    try {
+      res = await api('POST', '/api/update/apply', { sha: u.latest });
+    } catch (err) {
+      overlay.hidden = true;
+      alert(err.message);
+      return;
+    }
+    if (!res.restarting) {
+      showOverlay('Almost done: restart BetSite', 'The new version is installed. In Terminal, press <strong>Control + C</strong>, then run <code>npm start</code> again and reload this page. After this one time, updates will restart on their own.', true);
+      return;
+    }
+    showOverlay('Restarting BetSite…', 'This only takes a few seconds. The page will reload by itself.');
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1000));
+      try {
+        const v = await api('GET', '/api/version');
+        if (v.boot !== before && v.sha === res.sha) {
+          location.reload();
+          return;
+        }
+      } catch {
+        /* server is restarting */
+      }
+    }
+    showOverlay('Update installed', "BetSite didn't come back by itself. In Terminal, press <strong>Control + C</strong>, run <code>npm start</code>, then reload this page.", true);
+  }
+
+  // ---------- auto-refresh ----------
+  // While the site is open, quietly re-fetch injuries and schedules when they go stale and
+  // redraw the page, unless you're in the middle of typing or have a form open.
+
+  const INJURY_REFRESH_MS = 15 * 60 * 1000;
+  const SCHEDULE_REFRESH_MS = 10 * 60 * 1000;
+  const LIVE_REFRESH_MS = 60 * 1000;
+  let pendingRender = false;
+
+  const ageOf = (entry) => (entry && entry.data && entry.data.fetchedAt ? Date.now() - new Date(entry.data.fetchedAt).getTime() : Infinity);
+
+  function userIsBusy() {
+    if (modal.open || !overlay.hidden) return true;
+    const a = document.activeElement;
+    if (a && app.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return true;
+    const sel = window.getSelection && window.getSelection();
+    return !!(sel && String(sel).length);
+  }
+
+  function quietRender() {
+    if (userIsBusy()) {
+      pendingRender = true;
+      return;
+    }
+    pendingRender = false;
+    const y = window.scrollY;
+    render();
+    window.scrollTo(0, y);
+  }
+
+  async function autoRefresh() {
+    if (document.hidden) return;
+    const view = parseHash().parts[0];
+    const jobs = [];
+    const stamp = (e) => e && e.data && e.data.fetchedAt;
+    if (['injuries', 'matchups', 'team', 'bet'].includes(view)) {
+      for (const [league, e] of Object.entries(state.injuries)) {
+        if (!e.loading && e.data && ageOf(e) > INJURY_REFRESH_MS) {
+          const old = stamp(e);
+          jobs.push(loadInjuries(league, 'background').then(() => stamp(state.injuries[league]) !== old));
+        }
+      }
+    }
+    if (view === 'matchups') {
+      for (const [key, e] of Object.entries(state.schedule)) {
+        if (e.loading || !e.data) continue;
+        const games = e.data.games || [];
+        const hot = games.some((g) => g.state === 'in' || (g.state === 'pre' && new Date(g.date).getTime() <= Date.now()));
+        if (ageOf(e) > (hot ? LIVE_REFRESH_MS : SCHEDULE_REFRESH_MS)) {
+          const [league, days] = key.split(':');
+          const old = stamp(e);
+          jobs.push(loadSchedule(league, Number(days), 'background').then(() => stamp(state.schedule[key]) !== old));
+        }
+      }
+    }
+    const changed = (await Promise.all(jobs)).some(Boolean);
+    if (changed || pendingRender) quietRender();
+  }
+
+  setInterval(autoRefresh, 30 * 1000);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) autoRefresh();
+  });
+  document.addEventListener('focusout', () => setTimeout(() => pendingRender && quietRender(), 0));
+
   // ---------- boot ----------
+
+  api('GET', '/api/version')
+    .then((v) => (state.version = v))
+    .catch(() => {});
+  checkForUpdate();
+  setInterval(checkForUpdate, 3 * 60 * 60 * 1000);
 
   loadAll()
     .then(render)

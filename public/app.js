@@ -13,6 +13,7 @@
     notes: [],
     teamNotes: [],
     injuries: {}, // league -> { loading, data, error }
+    schedule: {}, // `${league}:${days}` -> { loading, data, error }
     sort: { key: 'date', dir: -1 },
   };
 
@@ -185,6 +186,7 @@
     teams: renderTeams,
     team: renderTeamDetail,
     injuries: renderInjuries,
+    matchups: renderMatchups,
     notes: renderNotes,
     settings: renderSettings,
   };
@@ -959,6 +961,192 @@
       render();
       toast('Injury report refreshed');
     });
+  }
+
+  // ---------- matchups ----------
+
+  function loadSchedule(league, days, force) {
+    const key = `${league}:${days}`;
+    const cur = state.schedule[key];
+    if (cur && cur.loading) return cur.promise;
+    if (cur && cur.data && !force) return Promise.resolve(cur);
+    const entry = { loading: true };
+    entry.promise = api('GET', `/api/schedule/${league}?days=${days}${force ? '&refresh=1' : ''}`)
+      .then((data) => Object.assign(entry, { loading: false, data, error: data.stale ? data.error : null }))
+      .catch((err) => Object.assign(entry, { loading: false, error: err.message, data: cur && cur.data }));
+    state.schedule[key] = entry;
+    return entry.promise;
+  }
+
+  const NFL_KEY_POS = ['QB', 'RB', 'WR', 'TE'];
+  const isLongTerm = (status) => /injured reserve|^ir$|pup|physically unable|suspen|non-football/i.test(String(status));
+  const severity = (status) => ({ out: 0, doubtful: 1, questionable: 2 }[statusClass(status)] ?? 3);
+
+  // Injuries worth flagging for a game. NFL: every QB, plus skill players (RB/WR/TE) who
+  // aren't on season-long lists. NBA: anyone out, doubtful, questionable or day-to-day.
+  function notableInjuries(sport, players, showAll) {
+    const list = players.filter((p) => {
+      if (showAll) return true;
+      if (sport === 'NFL') return p.position === 'QB' || (NFL_KEY_POS.includes(p.position) && !isLongTerm(p.status));
+      return statusClass(p.status) !== 'other';
+    });
+    const posRank = (p) => (p.position === 'QB' ? 0 : sport === 'NFL' && NFL_KEY_POS.includes(p.position) ? 1 : 2);
+    return list.sort((a, b) => posRank(a) - posRank(b) || severity(a.status) - severity(b.status) || a.name.localeCompare(b.name));
+  }
+
+  function injuryChip(p) {
+    const qb = p.position === 'QB';
+    return `<div class="inj-chip${qb ? ' qb' : ''}" title="${esc([p.injury, p.comment].filter(Boolean).join(' — '))}">
+      <span class="pos">${esc(p.position || '—')}</span> <strong>${esc(p.name)}</strong>
+      <span class="badge ${statusClass(p.status)}">${esc(p.status || '—')}</span>${p.injury ? ` <span class="muted small">${esc(p.injury)}</span>` : ''}</div>`;
+  }
+
+  function codeFor(sport, t) {
+    const list = window.LEAGUES[sport] || [];
+    const hit = list.find(([a]) => a === t.abbr) || list.find(([, n]) => n.toLowerCase() === String(t.name).toLowerCase());
+    return hit ? hit[0] : t.abbr;
+  }
+
+  function fmtGameTime(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return '';
+    return d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  }
+  const dayKey = (iso) => {
+    const d = new Date(iso);
+    return isNaN(d) ? '' : d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+  };
+
+  function renderMatchups(_, params) {
+    const league = params.get('league') === 'nba' ? 'nba' : 'nfl';
+    const sport = league.toUpperCase();
+    const days = Number(params.get('days')) || (league === 'nfl' ? 7 : 3);
+    const team = params.get('team') || '';
+    const showAll = params.get('all') === '1';
+    const mine = params.get('mine') === '1';
+    const sched = state.schedule[`${league}:${days}`];
+    const inj = state.injuries[league];
+
+    if (!sched) loadSchedule(league, days).then(render);
+    if (!inj) loadInjuries(league).then(render);
+
+    // pending picks (straight bets + parlay legs) by team code, for this league
+    const pendingPicks = S.picks(state.bets).filter((x) => x.sport === sport && (x.result || 'pending') === 'pending');
+    const picksFor = (h, a) => pendingPicks.filter((x) => [h, a].includes(x.team) || [h, a].includes(x.opponent));
+
+    let body;
+    if (!sched || sched.loading) {
+      body = '<div class="empty">Loading schedule…</div>';
+    } else if (!sched.data) {
+      body = `<div class="alert error">${esc(sched.error)}</div><p class="muted">The schedule comes from ESPN's public API. Make sure the server has internet access, then hit Refresh.</p>`;
+    } else {
+      const injTeams = (inj && inj.data && inj.data.teams) || [];
+      const games = sched.data.games
+        .filter((g) => g.state !== 'post')
+        .map((g) => ({ ...g, h: codeFor(sport, g.home), a: codeFor(sport, g.away) }))
+        .filter((g) => !team || g.h === team || g.a === team)
+        .filter((g) => !mine || picksFor(g.h, g.a).length);
+
+      // QB watch: every QB on the injury report whose team plays in this window
+      let qbWatch = '';
+      if (sport === 'NFL' && injTeams.length) {
+        const qbs = games.flatMap((g) =>
+          [[g.a, g.away], [g.h, g.home]].flatMap(([code, t]) => {
+            const it = findInjuryTeam(injTeams, sport, code);
+            return (it ? it.players : []).filter((p) => p.position === 'QB').map((p) => ({ ...p, code, teamName: t.name, game: g }));
+          })
+        );
+        if (qbs.length)
+          qbWatch = `<div class="card qb-watch"><h2>🏈 QB watch</h2><div class="muted small" style="margin:-6px 0 10px">Quarterbacks on the injury report for teams playing in this window.</div>
+            <div class="table-wrap"><table><thead><tr><th>QB</th><th>Team</th><th>Status</th><th class="hide-sm">Injury</th><th>Game</th></tr></thead><tbody>
+            ${qbs
+              .sort((x, y) => severity(x.status) - severity(y.status))
+              .map((p) => `<tr><td><strong>${esc(p.name)}</strong></td><td>${esc(p.code)}</td><td><span class="badge ${statusClass(p.status)}">${esc(p.status)}</span></td>
+                <td class="hide-sm">${esc(p.injury || '—')}</td><td class="small">${esc(p.game.a)} @ ${esc(p.game.h)} · ${fmtGameTime(p.game.date)}</td></tr>`)
+              .join('')}</tbody></table></div></div>`;
+      }
+
+      const card = (g) => {
+        const my = picksFor(g.h, g.a);
+        const live = g.state === 'in';
+        const teamRow = (code, t, prefix) => `<div class="gt-row">
+            ${t.logo ? `<img src="${esc(t.logo)}" alt="" width="24" height="24" loading="lazy">` : '<span class="logo-ph"></span>'}
+            <span class="gt-name">${prefix}${window.LEAGUES[sport].some(([x]) => x === code) ? `<a href="#/team/${sport}/${encodeURIComponent(code)}">${esc(t.name)}</a>` : esc(t.name)}</span>
+            <span class="muted small">${esc(t.record)}</span>${live && t.score !== '' ? `<strong class="gt-score">${esc(t.score)}</strong>` : ''}</div>`;
+        const injBlock = (code, t) => {
+          if (!inj || inj.loading) return `<div class="muted small">Loading injuries…</div>`;
+          if (!inj.data) return '';
+          const it = findInjuryTeam(injTeams, sport, code);
+          const list = notableInjuries(sport, it ? it.players : [], showAll);
+          return `<div class="gi-team"><div class="gi-head">${esc(code)}</div>${list.length ? list.map(injuryChip).join('') : `<div class="muted small">${showAll ? 'No injuries reported' : 'No notable injuries'}</div>`}</div>`;
+        };
+        return `<div class="game-card${my.length ? ' has-bet' : ''}">
+          <div class="game-top"><span>${live ? `<span class="badge out">LIVE</span> ${esc(g.status)}` : fmtGameTime(g.date)}</span><span class="muted small">${esc(g.tv)}</span></div>
+          ${teamRow(g.a, g.away, '')}
+          ${teamRow(g.h, g.home, '<span class="muted">@ </span>')}
+          ${g.spread || g.overUnder != null ? `<div class="game-lines">${g.spread ? `Line: <strong>${esc(g.spread)}</strong>` : ''}${g.spread && g.overUnder != null ? ' · ' : ''}${g.overUnder != null ? `O/U <strong>${esc(g.overUnder)}</strong>` : ''}</div>` : ''}
+          ${g.venue ? `<div class="muted small">${esc(g.venue)}</div>` : ''}
+          <div class="game-inj">${injBlock(g.a, g.away)}${injBlock(g.h, g.home)}</div>
+          ${my.length ? `<div class="game-mybets">📌 You have ${plural(my.length, 'pending pick')} on this game: ${my.map((x) => `<a href="#/bet/${encodeURIComponent((x.parlay || x).id)}">${esc(betTitle(x))}${x.parlay ? ' (parlay leg)' : ''}</a>`).join(', ')}</div>` : ''}
+          <div class="btn-row game-actions">
+            <button class="btn sm" data-bet-game="${esc(g.id)}" data-team="${esc(g.a)}" data-opp="${esc(g.h)}" data-date="${esc(g.date)}">+ Bet ${esc(g.a)}</button>
+            <button class="btn sm" data-bet-game="${esc(g.id)}" data-team="${esc(g.h)}" data-opp="${esc(g.a)}" data-date="${esc(g.date)}">+ Bet ${esc(g.h)}</button>
+          </div>
+        </div>`;
+      };
+
+      const byDay = new Map();
+      for (const g of games) {
+        const k = dayKey(g.date);
+        if (!byDay.has(k)) byDay.set(k, []);
+        byDay.get(k).push(g);
+      }
+      body =
+        (sched.error ? `<div class="alert">Showing cached schedule: ${esc(sched.error)}</div>` : '') +
+        (inj && !inj.loading && !inj.data ? `<div class="alert">Injury report unavailable: ${esc(inj.error)}</div>` : '') +
+        qbWatch +
+        (games.length
+          ? [...byDay.entries()].map(([day, list]) => `<h2 class="day-head">${esc(day)} <span class="muted small">${plural(list.length, 'game')}</span></h2><div class="game-grid">${list.map(card).join('')}</div>`).join('')
+          : `<div class="card empty">${mine ? "No upcoming games involving your pending bets." : `No upcoming ${sport} games in the next ${plural(days, 'day')}.`}</div>`) +
+        `<div class="muted small" style="margin-top:12px">Source: ESPN · schedule updated ${fmtDateTime(sched.data.fetchedAt)}${inj && inj.data ? ` · injuries updated ${fmtDateTime(inj.data.fetchedAt)}` : ''}</div>`;
+    }
+
+    const dayOpts = [[1, 'Today'], [3, 'Next 3 days'], [7, 'Next 7 days'], [14, 'Next 14 days']];
+    app.innerHTML = `
+      <div class="page-head"><div><h1>Matchups</h1><div class="muted">Upcoming games with notable injuries${sport === 'NFL' ? ' (QBs first)' : ''}. Games you have money on are highlighted.</div></div>
+        <div class="btn-row"><div class="tabs" id="leagueTabs">${['nfl', 'nba'].map((l) => `<button data-v="${l}" class="${l === league ? 'active' : ''}">${l.toUpperCase()}</button>`).join('')}</div>
+        <button class="btn" id="refreshSched">↻ Refresh</button></div></div>
+      <form class="filters" id="mFilters">
+        <input type="hidden" name="league" value="${league}">
+        <select name="days">${dayOpts.map(([v, l]) => `<option value="${v}" ${v === days ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <select name="team"><option value="">All teams</option>${window.LEAGUES[sport].map(([a, n]) => `<option value="${a}" ${a === team ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+        <label class="btn-row" style="margin:0;color:var(--text)"><input type="checkbox" name="all" value="1" ${showAll ? 'checked' : ''} style="width:auto"> Show all injuries</label>
+        <label class="btn-row" style="margin:0;color:var(--text)"><input type="checkbox" name="mine" value="1" ${mine ? 'checked' : ''} style="width:auto"> Only games I've bet on</label>
+      </form>
+      ${body}`;
+
+    const form = document.getElementById('mFilters');
+    form.addEventListener('change', () => {
+      const p = new URLSearchParams();
+      for (const [k, v] of new FormData(form)) if (v) p.set(k, v);
+      location.hash = '#/matchups?' + p;
+    });
+    app.querySelectorAll('#leagueTabs button').forEach((b) => b.addEventListener('click', () => (location.hash = '#/matchups?league=' + b.dataset.v)));
+    document.getElementById('refreshSched').addEventListener('click', async () => {
+      const a = loadSchedule(league, days, true);
+      const b = loadInjuries(league, true);
+      render();
+      await Promise.all([a, b]);
+      render();
+      toast('Matchups refreshed');
+    });
+    app.querySelectorAll('[data-bet-game]').forEach((btn) =>
+      btn.addEventListener('click', () => {
+        const d = new Date(btn.dataset.date);
+        const date = isNaN(d) ? today() : new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+        openBetForm({ sport, team: btn.dataset.team, opponent: btn.dataset.opp, date });
+      })
+    );
   }
 
   // ---------- notes ----------

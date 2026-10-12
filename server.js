@@ -10,12 +10,14 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { parseEspnInjuries } = require('./lib/injuries');
+const { parseEspnScoreboard, espnDay } = require('./lib/schedule');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'db.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const INJURY_TTL_MS = 15 * 60 * 1000;
+const SCHEDULE_TTL_MS = 10 * 60 * 1000;
 
 const COLLECTIONS = ['bets', 'notes', 'teamNotes'];
 const LEAGUE_PATHS = { nfl: 'football/nfl', nba: 'basketball/nba' };
@@ -122,6 +124,25 @@ async function getInjuries(league, force) {
   return { ...data, cached: false };
 }
 
+// ---------- schedule ----------
+
+const scheduleCache = {}; // `${league}:${days}` -> { at, data }
+
+async function getSchedule(league, days, force) {
+  const key = `${league}:${days}`;
+  const cached = scheduleCache[key];
+  if (!force && cached && Date.now() - cached.at < SCHEDULE_TTL_MS) return { ...cached.data, cached: true };
+  const now = new Date();
+  const end = new Date(now.getTime() + (days - 1) * 86400000);
+  const range = `${espnDay(now)}-${espnDay(end)}`;
+  const url = `https://site.api.espn.com/apis/site/v2/sports/${LEAGUE_PATHS[league]}/scoreboard?dates=${range}&limit=300`;
+  const r = await fetch(url, { headers: { 'User-Agent': 'BetSite/1.0' }, signal: AbortSignal.timeout(15000) });
+  if (!r.ok) throw new Error(`ESPN responded ${r.status}`);
+  const data = { league, days, range, fetchedAt: new Date().toISOString(), games: parseEspnScoreboard(await r.json()) };
+  scheduleCache[key] = { at: Date.now(), data };
+  return { ...data, cached: false };
+}
+
 // ---------- API ----------
 
 async function handleApi(req, res, url) {
@@ -137,6 +158,19 @@ async function handleApi(req, res, url) {
       const stale = injuryCache[league];
       if (stale) return send(res, 200, { ...stale.data, cached: true, stale: true, error: err.message });
       return send(res, 502, { error: `Could not load ${league.toUpperCase()} injuries: ${err.message}` });
+    }
+  }
+
+  if (resource === 'schedule') {
+    const league = (id || '').toLowerCase();
+    if (!LEAGUE_PATHS[league]) return send(res, 404, { error: 'Unknown league' });
+    const days = Math.min(21, Math.max(1, parseInt(url.searchParams.get('days'), 10) || 7));
+    try {
+      return send(res, 200, await getSchedule(league, days, url.searchParams.has('refresh')));
+    } catch (err) {
+      const stale = scheduleCache[`${league}:${days}`];
+      if (stale) return send(res, 200, { ...stale.data, cached: true, stale: true, error: err.message });
+      return send(res, 502, { error: `Could not load ${league.toUpperCase()} schedule: ${err.message}` });
     }
   }
 

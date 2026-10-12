@@ -247,3 +247,25 @@ dialog form { padding: 20px; max-height: calc(100vh - 64px); overflow-y: auto; }
 @media (max-width: 640px) { .leg-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 td .sub.show-sm-block { display: none; }
 @media (max-width: 640px) { td .sub.show-sm-block { display: block; } }
+
+/* ---------- matchups ---------- */
+.day-head { margin: 24px 0 10px; }
+.game-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+.game-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.game-card.has-bet { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.game-top { display: flex; justify-content: space-between; gap: 8px; font-size: .85rem; color: var(--text-2); }
+.gt-row { display: flex; align-items: center; gap: 8px; font-size: 1.02rem; }
+.gt-row img, .logo-ph { width: 24px; height: 24px; flex: none; }
+.gt-name { flex: 1; min-width: 0; font-weight: 600; }
+.gt-score { font-size: 1.1rem; font-variant-numeric: tabular-nums; }
+.game-lines { font-size: .88rem; color: var(--text-2); }
+.game-inj { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; border-top: 1px solid var(--border); padding-top: 8px; margin-top: 2px; }
+.gi-head { font-size: .75rem; font-weight: 700; letter-spacing: .05em; color: var(--text-2); margin-bottom: 4px; }
+.inj-chip { font-size: .82rem; line-height: 1.35; margin-bottom: 5px; }
+.inj-chip .pos { display: inline-block; min-width: 26px; font-size: .72rem; font-weight: 700; color: var(--text-2); }
+.inj-chip.qb { background: var(--warn-bg); border-radius: 6px; padding: 3px 6px; margin-left: -6px; }
+.inj-chip.qb .pos { color: var(--warn); }
+.game-mybets { font-size: .85rem; background: var(--surface-2); border-radius: 6px; padding: 6px 8px; }
+.game-actions { margin-top: 4px; }
+.qb-watch { border-color: var(--warn); }
+@media (max-width: 640px) { .game-grid { grid-template-columns: minmax(0, 1fr); } }

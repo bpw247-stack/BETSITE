@@ -10,6 +10,7 @@ A personal website for tracking your sports bets: picks, money placed, wins and 
 - **Dashboard**: net profit, W-L-P record, win rate, ROI, money at risk, current streak and a running profit/loss chart you can hover. It also has breakdowns by team, prop, bet type and sport.
 - **Prop success rates**: by prop category (Passing Yards, Points, PRA…), by side, by category × side and by player.
 - **Team success rates**: record, win %, money staked, P/L and ROI for every team you've backed, and for teams you've bet *against*. Each team has its own page with its bets, live injuries and notes.
+- **Matchups**: upcoming NFL or NBA games (today, or the next 3, 7 or 14 days) with kickoff/tip time, TV, records, the betting line and over/under, and live scores. Each game lists its notable injuries. For the NFL that's every QB plus RB/WR/TE not on a season-long list, and for the NBA it's anyone out, doubtful, questionable or day-to-day; a toggle shows all injuries. NFL weeks also get a **QB watch** table. Games you have pending bets or parlay legs on are highlighted, and each game has buttons to log a bet on either team with the matchup pre-filled.
 - **Injury reports**: live NFL and NBA injury lists from ESPN's public feed, cached for 15 minutes. You can filter by team, status or player, or show only teams you've bet on. Teams with pending bets are highlighted, and injuries also appear on each bet and team page.
 - **Notes**:
   - A **general notes** page with titles, tags, pinning and search.
@@ -52,6 +53,7 @@ npm test
 ```
 server.js          HTTP server: static files, JSON storage, REST API, injury proxy
 lib/injuries.js    Normalizes ESPN's injury feed
+lib/schedule.js    Normalizes ESPN's scoreboard (upcoming games)
 public/            Frontend (vanilla JS, no build step)
   index.html
   app.js           Views: dashboard, bets, props, teams, injuries, notes, backup
@@ -68,5 +70,6 @@ test/              node:test suites
 | GET/POST | `/api/bets`, `/api/notes`, `/api/teamNotes` | list / create |
 | GET/PUT/DELETE | `/api/{collection}/{id}` | read / update / delete |
 | GET | `/api/injuries/nfl`, `/api/injuries/nba` | injury report (`?refresh` skips the cache) |
+| GET | `/api/schedule/nfl`, `/api/schedule/nba` | upcoming games (`?days=1-21`, `?refresh`) |
 | GET | `/api/export` | full JSON backup |
 | POST | `/api/import` | restore (replaces all data) |

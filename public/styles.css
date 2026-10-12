@@ -237,3 +237,13 @@ dialog form { padding: 20px; max-height: calc(100vh - 64px); overflow-y: auto; }
   td:nth-child(2) a { word-break: normal; }
   .card { padding: 12px; }
 }
+
+/* ---------- parlay legs ---------- */
+.leg-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px 0; margin-bottom: 10px; background: var(--surface-2); }
+.leg-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.leg-head .leg-preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.leg-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 10px; }
+.legs-line { color: var(--text-2) !important; }
+@media (max-width: 640px) { .leg-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+td .sub.show-sm-block { display: none; }
+@media (max-width: 640px) { td .sub.show-sm-block { display: block; } }

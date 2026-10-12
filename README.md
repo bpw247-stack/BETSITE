@@ -5,6 +5,7 @@ A personal website for tracking your sports bets: picks, money placed, wins and 
 ## Features
 
 - **Bet tracking**: log moneylines, spreads, totals, player props, game props, parlays and futures. Each bet records the sport, team, opponent, player, prop category, side (Over/Under/Yes/No), line, American odds, stake, sportsbook and result. The site works out the payout, and you can override P/L by hand for cash-outs, boosts or free bets.
+- **Parlay legs**: when you choose Parlay, you add each leg (moneyline, spread, total or prop, from any league) with its own odds and result. The parlay's overall result comes from its legs: one losing leg loses it, and a pushed leg drops out with the payout reduced. Combined odds are filled in automatically from the legs' odds. Every leg also counts toward that team's, player's and prop's success rate. The parlay's money counts only toward the parlay itself.
 - **Quick settle**: mark pending bets Won, Lost or Push with one click.
 - **Dashboard**: net profit, W-L-P record, win rate, ROI, money at risk, current streak and a running profit/loss chart you can hover. It also has breakdowns by team, prop, bet type and sport.
 - **Prop success rates**: by prop category (Passing Yards, Points, PRA…), by side, by category × side and by player.

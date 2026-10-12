@@ -13,6 +13,35 @@
     return odds > 0 ? stake * (odds / 100) : stake * (100 / Math.abs(odds));
   }
 
+  const validOdds = (o) => o !== '' && o != null && isFinite(Number(o)) && Math.abs(Number(o)) >= 100;
+
+  function toDecimal(odds) {
+    odds = Number(odds);
+    return odds > 0 ? 1 + odds / 100 : 1 + 100 / Math.abs(odds);
+  }
+
+  function toAmerican(decimal) {
+    if (!(decimal > 1)) return null;
+    return Math.round(decimal >= 2 ? (decimal - 1) * 100 : -100 / (decimal - 1));
+  }
+
+  // Combined American odds for a set of legs, or null if any leg is missing odds.
+  function parlayOdds(legs) {
+    if (!legs || !legs.length || !legs.every((l) => validOdds(l.odds))) return null;
+    return toAmerican(legs.reduce((d, l) => d * toDecimal(l.odds), 1));
+  }
+
+  // Overall parlay result from its legs: any loss loses; any pending leg keeps it open;
+  // pushed legs drop out; all pushed is a push. Null when there are no legs.
+  function parlayResult(legs) {
+    if (!legs || !legs.length) return null;
+    const r = legs.map((l) => l.result || 'pending');
+    if (r.includes('lost')) return 'lost';
+    if (r.includes('pending')) return 'pending';
+    if (r.every((x) => x === 'push')) return 'push';
+    return 'won';
+  }
+
   // Net profit/loss for a bet. Pending bets are 0.
   // A numeric `profitOverride` (e.g. cash-outs, boosted payouts) wins over computed value.
   function betProfit(bet) {
@@ -21,6 +50,12 @@
       return Number(bet.profitOverride);
     }
     const stake = Number(bet.stake) || 0;
+    const legs = bet.legs || [];
+    if (bet.result === 'won' && legs.some((l) => l.result === 'push')) {
+      // A pushed leg drops out, so the payout shrinks to the remaining legs' odds (when known).
+      const reduced = parlayOdds(legs.filter((l) => l.result !== 'push'));
+      if (reduced != null) return winProfit(reduced, stake);
+    }
     if (bet.result === 'won') return winProfit(bet.odds, stake);
     if (bet.result === 'lost') return -stake;
     return 0;
@@ -32,11 +67,35 @@
     return odds > 0 ? 100 / (odds + 100) : Math.abs(odds) / (Math.abs(odds) + 100);
   }
 
-  function summarize(bets) {
-    const s = { count: 0, won: 0, lost: 0, push: 0, pending: 0, staked: 0, settledStaked: 0, atRisk: 0, profit: 0, winRate: null, roi: null };
+  // Every individual pick: straight bets as themselves, parlays expanded into their legs.
+  // Legs inherit the parlay's date/sport and carry `parlay` (the parent bet). They count
+  // toward records and success rates but not toward money (the stake belongs to the parlay).
+  function picks(bets) {
+    const out = [];
     for (const b of bets) {
-      const stake = Number(b.stake) || 0;
+      if (b.legs && b.legs.length) {
+        for (const l of b.legs) out.push({ ...l, sport: l.sport || b.sport, date: b.date, createdAt: b.createdAt, result: l.result || 'pending', parlay: b });
+      } else {
+        out.push(b);
+      }
+    }
+    return out;
+  }
+
+  function summarize(bets) {
+    const s = { count: 0, legs: 0, won: 0, lost: 0, push: 0, pending: 0, staked: 0, settledStaked: 0, atRisk: 0, profit: 0, winRate: null, roi: null };
+    for (const b of bets) {
       s.count++;
+      if (b.parlay) {
+        // parlay leg: counts for the record only
+        s.legs++;
+        if (b.result === 'won') s.won++;
+        else if (b.result === 'lost') s.lost++;
+        else if (b.result === 'push') s.push++;
+        else s.pending++;
+        continue;
+      }
+      const stake = Number(b.stake) || 0;
       s.staked += stake;
       if (b.result === 'won') s.won++;
       else if (b.result === 'lost') s.lost++;
@@ -96,7 +155,7 @@
     return { type, length };
   }
 
-  const api = { winProfit, betProfit, impliedProbability, summarize, groupStats, cumulative, streak };
+  const api = { winProfit, toDecimal, toAmerican, parlayOdds, parlayResult, picks, betProfit, impliedProbability, summarize, groupStats, cumulative, streak };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BetStats = api;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -60,3 +60,43 @@ test('cumulative and streak follow date order', () => {
   assert.deepStrictEqual(S.cumulative(bets).map((p) => p.total), [-10, 0, 10]);
   assert.deepStrictEqual(S.streak(bets), { type: 'won', length: 2 });
 });
+
+test('parlayResult derives the overall result from legs', () => {
+  const r = (...xs) => S.parlayResult(xs.map((result) => ({ result })));
+  assert.strictEqual(S.parlayResult([]), null);
+  assert.strictEqual(r('won', 'won'), 'won');
+  assert.strictEqual(r('won', 'lost', 'pending'), 'lost');
+  assert.strictEqual(r('won', 'pending'), 'pending');
+  assert.strictEqual(r('won', 'push'), 'won');
+  assert.strictEqual(r('push', 'push'), 'push');
+});
+
+test('parlayOdds combines leg odds; pushed legs reduce the payout', () => {
+  assert.strictEqual(S.parlayOdds([{ odds: -110 }, { odds: -110 }]), 264);
+  assert.strictEqual(S.parlayOdds([{ odds: -110 }, { odds: '' }]), null);
+  const bet = { result: 'won', odds: 264, stake: 10, legs: [{ odds: -110, result: 'won' }, { odds: -110, result: 'push' }] };
+  close(S.betProfit(bet), 10 * (100 / 110));
+});
+
+test('picks expands parlay legs; legs count for record but not money', () => {
+  const parlay = {
+    sport: 'NFL', date: '2026-10-01', betType: 'Parlay', odds: 264, stake: 10, result: 'lost',
+    legs: [
+      { betType: 'Moneyline', team: 'KC', result: 'won' },
+      { betType: 'Player Prop', team: 'BUF', player: 'Josh Allen', propCategory: 'Passing Yards', result: 'lost' },
+    ],
+  };
+  const straight = { sport: 'NFL', betType: 'Moneyline', team: 'KC', odds: 100, stake: 5, result: 'won' };
+  const picks = S.picks([parlay, straight]);
+  assert.strictEqual(picks.length, 3);
+  assert.strictEqual(picks[0].sport, 'NFL');
+  assert.strictEqual(picks[0].parlay, parlay);
+
+  const kc = S.groupStats(picks, (p) => p.team).find((g) => g.key === 'KC');
+  assert.deepStrictEqual([kc.count, kc.legs, kc.won, kc.lost], [2, 1, 2, 0]);
+  close(kc.profit, 5); // only the straight bet's money
+  close(kc.staked, 5);
+
+  const props = S.groupStats(picks.filter((p) => p.propCategory), (p) => p.propCategory);
+  assert.deepStrictEqual([props[0].key, props[0].lost, props[0].winRate], ['Passing Yards', 1, 0]);
+});

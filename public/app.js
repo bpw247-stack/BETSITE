@@ -70,9 +70,15 @@
     return teamName(sport, abbr);
   };
   const isProp = (b) => window.PROP_TYPES.includes(b.betType);
+  const hasLegs = (b) => !!(b && b.legs && b.legs.length);
+  const resultMark = (r) => (r === 'won' ? '✓' : r === 'lost' ? '✗' : r === 'push' ? '↺' : '…');
+  const legsSummary = (b) => (b.legs || []).map((l) => `${resultMark(l.result)} ${betTitle(l)}`).join('  ·  ');
+  // Does this bet (or any of its parlay legs) match the predicate?
+  const anyPick = (b, fn) => fn(b) || (b.legs || []).some((l) => fn({ ...l, sport: l.sport || b.sport }));
 
   function betTitle(b) {
     if (b.pick) return b.pick;
+    if (hasLegs(b)) return `${b.legs.length}-leg parlay`;
     const team = b.team ? teamName(b.sport, b.team) : '';
     const line = b.line !== '' && b.line != null ? String(b.line) : '';
     const signedLine = line && Number(line) > 0 ? '+' + line : line;
@@ -86,6 +92,7 @@
     }
   }
   function betSub(b) {
+    if (hasLegs(b)) return [b.sport, 'Parlay', b.book].filter(Boolean).join(' · ');
     const parts = [b.sport, b.betType];
     if (b.team && b.opponent) parts.push(`${b.team} vs ${b.opponent}`);
     else if (b.team && b.betType !== 'Moneyline' && b.betType !== 'Spread') parts.push(teamName(b.sport, b.team));
@@ -133,6 +140,14 @@
   async function deleteBet(id) {
     await api('DELETE', '/api/bets/' + encodeURIComponent(id));
     state.bets = state.bets.filter((b) => b.id !== id);
+  }
+  async function settleLeg(betId, legId, result) {
+    const bet = state.bets.find((b) => b.id === betId);
+    if (!bet) return;
+    const legs = bet.legs.map((l) => (l.id === legId ? { ...l, result } : l));
+    const saved = await saveBet({ ...bet, legs, result: S.parlayResult(legs) });
+    toast(saved.result === 'pending' ? `Leg marked ${result}` : `Leg marked ${result} · parlay ${saved.result}`);
+    render();
   }
   async function settle(id, result) {
     const bet = state.bets.find((b) => b.id === id);
@@ -193,13 +208,15 @@
     const st = S.streak(state.bets);
     return `<div class="tiles">
       <div class="tile"><div class="label">Net profit</div><div class="value ${plClass(s.profit)}">${money(s.profit, true)}</div><div class="sub">on ${money(s.settledStaked)} settled</div></div>
-      <div class="tile"><div class="label">Record (W-L-P)</div><div class="value">${s.won}-${s.lost}-${s.push}</div><div class="sub">${s.count} bets total</div></div>
+      <div class="tile"><div class="label">Record (W-L-P)</div><div class="value">${s.won}-${s.lost}-${s.push}</div><div class="sub">${s.legs ? `${s.count} picks (${s.legs} parlay legs)` : `${s.count} bets total`}</div></div>
       <div class="tile"><div class="label">Win rate</div><div class="value">${pct(s.winRate)}</div><div class="sub">pushes excluded</div></div>
       <div class="tile"><div class="label">ROI</div><div class="value">${roiHtml(s.roi)}</div><div class="sub">profit ÷ settled stake</div></div>
       <div class="tile"><div class="label">Pending</div><div class="value">${s.pending}</div><div class="sub">${money(s.atRisk)} at risk</div></div>
       ${extra || (st ? `<div class="tile"><div class="label">Streak</div><div class="value ${st.type === 'won' ? 'pos' : 'neg'}">${st.type === 'won' ? 'W' : 'L'}${st.length}</div><div class="sub">current run</div></div>` : '')}
     </div>`;
   }
+
+  const LEGS_NOTE = '<div class="muted small" style="margin:-4px 0 8px">Parlay legs count toward picks and success rate. Staked and P/L come from straight bets only, because a parlay\'s money belongs to the whole parlay.</div>';
 
   function groupTable(groups, { label, link, empty = 'No bets yet.', limit } = {}) {
     if (!groups.length) return `<div class="empty">${esc(empty)}</div>`;
@@ -208,7 +225,7 @@
         const href = link ? link(g) : null;
         return `<tr${href ? ` class="clickable" data-href="${esc(href)}"` : ''}>
           <td>${href ? `<a href="${esc(href)}">${esc(label ? label(g) : g.key)}</a>` : esc(label ? label(g) : g.key)}</td>
-          <td class="num">${g.count}</td>
+          <td class="num">${g.count}${g.legs ? `<span class="sub" title="Parlay legs included">${g.legs} in parlays</span>` : ''}</td>
           <td class="num">${record(g)}</td>
           <td>${meter(g.winRate)}</td>
           <td class="num hide-sm">${money(g.staked)}</td>
@@ -218,7 +235,7 @@
       })
       .join('');
     return `<div class="table-wrap"><table>
-      <thead><tr><th></th><th class="num">Bets</th><th class="num">W-L-P</th><th>Success rate</th><th class="num hide-sm">Staked</th><th class="num">P/L</th><th class="num hide-sm">ROI</th></tr></thead>
+      <thead><tr><th></th><th class="num">Picks</th><th class="num">W-L-P</th><th>Success rate</th><th class="num hide-sm">Staked</th><th class="num">P/L</th><th class="num hide-sm">ROI</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   }
 
@@ -233,12 +250,14 @@
         const p = S.betProfit(b);
         const nNotes = (b.notes || []).length;
         const settleBtns =
-          quickSettle && (!b.result || b.result === 'pending')
+          quickSettle && hasLegs(b) && b.result === 'pending'
+            ? `<a class="btn sm" href="#/bet/${encodeURIComponent(b.id)}">Settle legs</a>`
+            : quickSettle && (!b.result || b.result === 'pending')
             ? `<div class="btn-row"><button class="btn sm win" data-settle="won" data-id="${esc(b.id)}" title="Mark won">W</button><button class="btn sm loss" data-settle="lost" data-id="${esc(b.id)}" title="Mark lost">L</button><button class="btn sm" data-settle="push" data-id="${esc(b.id)}" title="Mark push">P</button></div>`
             : '';
         return `<tr class="clickable" data-href="#/bet/${encodeURIComponent(b.id)}">
           <td class="hide-sm" style="white-space:nowrap">${fmtDate(b.date)}</td>
-          <td><a href="#/bet/${encodeURIComponent(b.id)}">${esc(betTitle(b))}</a><span class="sub">${esc(betSub(b))}<span class="show-sm"> · ${fmtDate(b.date)}</span>${nNotes ? ` · 📝 ${nNotes}` : ''}</span></td>
+          <td><a href="#/bet/${encodeURIComponent(b.id)}">${esc(betTitle(b))}</a>${hasLegs(b) ? `<span class="sub legs-line">${esc(legsSummary(b))}</span>` : ''}<span class="sub">${esc(betSub(b))}<span class="show-sm"> · ${fmtDate(b.date)}</span>${nNotes ? ` · 📝 ${nNotes}` : ''}</span></td>
           <td class="num hide-sm">${oddsStr(b.odds)}</td>
           <td class="num">${money(b.stake)}<span class="sub show-sm-block">${oddsStr(b.odds)}</span></td>
           <td>${badge(b.result)}</td>
@@ -434,6 +453,7 @@
     const bets = state.bets;
     const s = S.summarize(bets);
     const series = S.cumulative(bets);
+    const legsNote = bets.some(hasLegs) ? LEGS_NOTE : '';
     const pending = bets.filter((b) => !b.result || b.result === 'pending').sort((a, b) => String(a.date).localeCompare(String(b.date)));
     const recent = bets
       .filter((b) => b.result && b.result !== 'pending')
@@ -448,10 +468,10 @@
       <div class="card section"><div class="card-head"><h2>Pending bets</h2><a href="#/bets?result=pending">View all</a></div>${betsTable(pending.slice(0, 8))}</div>
       <div class="card section"><div class="card-head"><h2>Recently settled</h2><a href="#/bets">All bets</a></div>${betsTable(recent, { quickSettle: false })}</div>
       <div class="grid cols-2 section">
-        <div class="card"><div class="card-head"><h2>Teams you've backed</h2><a href="#/teams">All teams</a></div>
-          ${groupTable(S.groupStats(bets, teamKey), { label: (g) => teamLabelFromKey(g.key), link: (g) => '#/team/' + g.key.split('|').map(encodeURIComponent).join('/'), limit: 6, empty: 'No team bets yet.' })}</div>
-        <div class="card"><div class="card-head"><h2>Prop bets</h2><a href="#/props">All props</a></div>
-          ${groupTable(S.groupStats(bets.filter(isProp), (b) => b.propCategory || 'Uncategorized'), { link: (g) => '#/bets?prop=' + encodeURIComponent(g.key), limit: 6, empty: 'No prop bets yet.' })}</div>
+        <div class="card"><div class="card-head"><h2>Teams you've backed</h2><a href="#/teams">All teams</a></div>${legsNote}
+          ${groupTable(S.groupStats(S.picks(bets), teamKey), { label: (g) => teamLabelFromKey(g.key), link: (g) => '#/team/' + g.key.split('|').map(encodeURIComponent).join('/'), limit: 6, empty: 'No team bets yet.' })}</div>
+        <div class="card"><div class="card-head"><h2>Prop bets</h2><a href="#/props">All props</a></div>${legsNote}
+          ${groupTable(S.groupStats(S.picks(bets).filter(isProp), (b) => b.propCategory || 'Uncategorized'), { link: (g) => '#/bets?prop=' + encodeURIComponent(g.key), limit: 6, empty: 'No prop bets yet.' })}</div>
       </div>
       <div class="grid cols-2 section">
         <div class="card"><h2>By bet type</h2>${groupTable(S.groupStats(bets, (b) => b.betType), { link: (g) => '#/bets?type=' + encodeURIComponent(g.key) })}</div>
@@ -483,13 +503,14 @@
       if (params.get('sport') && b.sport !== params.get('sport')) return false;
       if (params.get('type') && b.betType !== params.get('type')) return false;
       if (params.get('result') && (b.result || 'pending') !== params.get('result')) return false;
-      if (params.get('team') && b.team !== params.get('team')) return false;
-      if (params.get('prop') && (b.propCategory || 'Uncategorized') !== params.get('prop')) return false;
-      if (params.get('player') && b.player !== params.get('player')) return false;
+      if (params.get('team') && !anyPick(b, (x) => x.team === params.get('team'))) return false;
+      if (params.get('prop') && !anyPick(b, (x) => isProp(x) && (x.propCategory || 'Uncategorized') === params.get('prop'))) return false;
+      if (params.get('player') && !anyPick(b, (x) => x.player === params.get('player'))) return false;
       if (params.get('from') && String(b.date) < params.get('from')) return false;
       if (params.get('to') && String(b.date) > params.get('to')) return false;
       if (q) {
-        const hay = [betTitle(b), betSub(b), b.player, b.propCategory, teamName(b.sport, b.team), teamName(b.sport, b.opponent), b.book, ...(b.notes || []).map((n) => n.text)]
+        const hay = [betTitle(b), betSub(b), b.player, b.propCategory, teamName(b.sport, b.team), teamName(b.sport, b.opponent), b.book, ...(b.notes || []).map((n) => n.text),
+          ...(b.legs || []).flatMap((l) => [betTitle(l), l.player, l.propCategory, teamName(l.sport || b.sport, l.team), teamName(l.sport || b.sport, l.opponent)])]
           .join(' ')
           .toLowerCase();
         if (!hay.includes(q)) return false;
@@ -503,8 +524,9 @@
     const s = S.summarize(filtered);
     const opt = (vals, sel, all) => `<option value="">${all}</option>` + vals.map((v) => `<option ${v === sel ? 'selected' : ''}>${esc(v)}</option>`).join('');
     const sports = [...new Set(['NFL', 'NBA', ...state.bets.map((b) => b.sport).filter(Boolean)])];
-    const teams = [...new Set(state.bets.map((b) => b.team).filter(Boolean))].sort();
-    const props = [...new Set(state.bets.filter(isProp).map((b) => b.propCategory || 'Uncategorized'))].sort();
+    const allPicks = S.picks(state.bets);
+    const teams = [...new Set(allPicks.map((b) => b.team).filter(Boolean))].sort();
+    const props = [...new Set(allPicks.filter(isProp).map((b) => b.propCategory || 'Uncategorized'))].sort();
     const active = [...params.keys()].length;
 
     app.innerHTML = `
@@ -571,13 +593,44 @@
     const implied = S.impliedProbability(b.odds);
     const pending = !b.result || b.result === 'pending';
     const hasLeague = window.LEAGUES[b.sport];
+    const parlay = hasLegs(b);
     const row = (k, v) => (v === '' || v == null ? '' : `<dt>${k}</dt><dd>${v}</dd>`);
+    // teams/players to show injuries for, grouped by league
+    const injuryGroups = {};
+    for (const x of parlay ? b.legs.map((l) => ({ ...l, sport: l.sport || b.sport })) : [b]) {
+      if (!window.LEAGUES[x.sport]) continue;
+      const g = (injuryGroups[x.sport] = injuryGroups[x.sport] || { teams: [], players: [] });
+      for (const t of [x.team, x.opponent]) if (t && !g.teams.includes(t)) g.teams.push(t);
+      if (x.player) g.players.push(x.player);
+    }
+    const injurySports = Object.keys(injuryGroups).filter((sp) => injuryGroups[sp].teams.length);
+    const settleBtns = (legId, size = '') =>
+      ['won', 'lost', 'push']
+        .map((r) => `<button class="btn ${size} ${r === 'won' ? 'win' : r === 'lost' ? 'loss' : ''}" data-leg="${esc(legId)}" data-leg-result="${r}" title="Mark ${r}">${r === 'won' ? 'W' : r === 'lost' ? 'L' : 'P'}</button>`)
+        .join('');
+    const teamLink = (sp, t) => (window.LEAGUES[sp] ? `<a href="#/team/${encodeURIComponent(sp)}/${encodeURIComponent(t)}">${esc(teamName(sp, t))}</a>` : esc(t));
+    const legsCard = parlay
+      ? `<div class="card section" id="legsCard"><div class="card-head"><h2>Parlay legs</h2><span class="muted small">${b.legs.filter((l) => l.result === 'won').length} of ${b.legs.length} hit · overall result is set from the legs</span></div>
+        <div class="table-wrap"><table><thead><tr><th>#</th><th>Leg</th><th class="num hide-sm">Odds</th><th>Result</th><th></th></tr></thead><tbody>
+        ${b.legs
+          .map((l, i) => {
+            const sp = l.sport || b.sport;
+            const bits = [sp, l.betType, l.team && l.opponent ? `${teamLink(sp, l.team)} vs ${teamLink(sp, l.opponent)}` : l.team ? teamLink(sp, l.team) : ''].filter(Boolean);
+            return `<tr><td class="muted">${i + 1}</td>
+              <td><strong>${esc(betTitle({ ...l, sport: sp }))}</strong><span class="sub">${bits.join(' · ')}</span></td>
+              <td class="num hide-sm">${oddsStr(l.odds)}</td>
+              <td>${badge(l.result)}</td>
+              <td><div class="btn-row">${(l.result || 'pending') === 'pending' ? settleBtns(l.id, 'sm') : `<button class="btn sm" data-leg="${esc(l.id)}" data-leg-result="pending">Reopen</button>`}</div></td></tr>`;
+          })
+          .join('')}
+        </tbody></table></div></div>`
+      : '';
 
     app.innerHTML = `
       <div class="page-head">
         <div><a href="#/bets" class="small">← All bets</a><h1>${esc(betTitle(b))}</h1><div class="muted">${esc(betSub(b))} · ${fmtDate(b.date)}</div></div>
         <div class="btn-row">
-          ${pending ? `<button class="btn win" data-settle="won" data-id="${esc(b.id)}">Mark won</button><button class="btn loss" data-settle="lost" data-id="${esc(b.id)}">Mark lost</button><button class="btn" data-settle="push" data-id="${esc(b.id)}">Push</button>` : `<button class="btn" data-settle="pending" data-id="${esc(b.id)}">Reopen</button>`}
+          ${parlay ? '' : pending ? `<button class="btn win" data-settle="won" data-id="${esc(b.id)}">Mark won</button><button class="btn loss" data-settle="lost" data-id="${esc(b.id)}">Mark lost</button><button class="btn" data-settle="push" data-id="${esc(b.id)}">Push</button>` : `<button class="btn" data-settle="pending" data-id="${esc(b.id)}">Reopen</button>`}
           <button class="btn" id="editBet">Edit</button>
           <button class="btn" id="dupBet" title="Create a copy of this bet">Duplicate</button>
           <button class="btn danger" id="delBet">Delete</button>
@@ -590,6 +643,7 @@
             ${row('Result', badge(b.result))}
             ${row('Sport', esc(b.sport))}
             ${row('Bet type', esc(b.betType))}
+            ${row('Legs', parlay ? `${b.legs.length} legs` : '')}
             ${b.team ? row('Team', hasLeague ? `<a href="#/team/${encodeURIComponent(b.sport)}/${encodeURIComponent(b.team)}">${esc(teamName(b.sport, b.team))}</a>` : esc(b.team)) : ''}
             ${b.opponent ? row('Opponent', hasLeague ? `<a href="#/team/${encodeURIComponent(b.sport)}/${encodeURIComponent(b.opponent)}">${esc(teamName(b.sport, b.opponent))}</a>` : esc(b.opponent)) : ''}
             ${row('Player', b.player ? `<a href="#/bets?player=${encodeURIComponent(b.player)}">${esc(b.player)}</a>` : '')}
@@ -608,13 +662,17 @@
         <div class="card" id="betNotes"><div class="card-head"><h2>Notes on this bet</h2><span class="muted small">${plural((b.notes || []).length, 'note')}</span></div>
           ${notesLogHtml(b.notes, 'Why you made this pick, line movement, what happened…')}</div>
       </div>
-      ${hasLeague && (b.team || b.opponent) ? `<div class="card section"><div class="card-head"><h2>Injury report</h2><a href="#/injuries?league=${b.sport.toLowerCase()}">Full ${esc(b.sport)} report</a></div><div id="betInjuries"></div></div>` : ''}`;
+      ${legsCard}
+      ${injurySports
+        .map((sp) => `<div class="card section"><div class="card-head"><h2>${injurySports.length > 1 ? esc(sp) + ' injury' : 'Injury'} report</h2><a href="#/injuries?league=${sp.toLowerCase()}">Full ${esc(sp)} report</a></div><div data-injuries="${esc(sp)}"></div></div>`)
+        .join('')}`;
 
     wireCommon();
     document.getElementById('editBet').addEventListener('click', () => openBetForm(b));
     document.getElementById('dupBet').addEventListener('click', () => {
       const { id: _i, createdAt: _c, updatedAt: _u, notes: _n, ...rest } = b;
-      openBetForm({ ...rest, result: 'pending', date: today(), profitOverride: '' }, { duplicate: true });
+      const legs = (rest.legs || []).map((l) => ({ ...l, id: uid(), result: 'pending' }));
+      openBetForm({ ...rest, legs, result: 'pending', date: today(), profitOverride: '' }, { duplicate: true });
     });
     document.getElementById('delBet').addEventListener('click', async () => {
       if (!confirm('Delete this bet and its notes? This cannot be undone.')) return;
@@ -627,21 +685,24 @@
       () => (state.bets.find((x) => x.id === id) || {}).notes,
       (notes) => saveBet({ ...state.bets.find((x) => x.id === id), notes })
     );
-    if (hasLeague && (b.team || b.opponent)) {
-      renderTeamInjuriesInto(document.getElementById('betInjuries'), b.sport, [b.team, b.opponent].filter(Boolean), b.player);
+    for (const sp of injurySports) {
+      renderTeamInjuriesInto(app.querySelector(`[data-injuries="${CSS.escape(sp)}"]`), sp, injuryGroups[sp].teams, injuryGroups[sp].players);
     }
+    app.querySelectorAll('[data-leg]').forEach((btn) =>
+      btn.addEventListener('click', () => settleLeg(b.id, btn.dataset.leg, btn.dataset.legResult).catch((err) => toast(err.message)))
+    );
   }
 
   function renderProps(_, params) {
     const sport = params.get('sport') || '';
-    const props = state.bets.filter(isProp).filter((b) => !sport || b.sport === sport);
+    const props = S.picks(state.bets).filter(isProp).filter((b) => !sport || b.sport === sport);
     const s = S.summarize(props);
     const link = (key, val) => (g) => `#/bets?${key}=${encodeURIComponent(g.key)}${sport ? '&sport=' + sport : ''}${val || ''}`;
     app.innerHTML = `
       <div class="page-head"><div><h1>Prop bets</h1><div class="muted">Success rate by prop category, side and player.</div></div>
         <div class="tabs" id="sportTabs">${['', 'NFL', 'NBA'].map((v) => `<button data-v="${v}" class="${v === sport ? 'active' : ''}">${v || 'All'}</button>`).join('')}</div></div>
       ${tilesHtml(s, ' ')}
-      <div class="card"><h2>By prop category</h2>
+      <div class="card"><h2>By prop category</h2>${props.some((p) => p.parlay) ? LEGS_NOTE : ''}
         ${groupTable(S.groupStats(props, (b) => b.propCategory || 'Uncategorized'), { link: link('prop'), empty: 'No prop bets yet. Add a bet with type "Player Prop" or "Game Prop".' })}</div>
       <div class="grid cols-2 section">
         <div class="card"><h2>By side (Over / Under / Yes / No)</h2>
@@ -660,7 +721,7 @@
   function renderTeams(_, params) {
     const sport = params.get('sport') || '';
     const showAll = params.get('all') === '1';
-    const bets = state.bets.filter((b) => !sport || b.sport === sport);
+    const bets = S.picks(state.bets).filter((b) => !sport || b.sport === sport);
     const groups = S.groupStats(bets, teamKey);
     const against = S.groupStats(bets.filter((b) => b.opponent && ['Moneyline', 'Spread'].includes(b.betType)), (b) => `${b.sport}|${b.opponent}`);
     const noteIds = new Set(state.teamNotes.filter((t) => (t.entries || []).length).map((t) => t.id));
@@ -678,7 +739,7 @@
     app.innerHTML = `
       <div class="page-head"><div><h1>Teams</h1><div class="muted">Success rate on teams you've put money on. Click a team for its bets, injuries and notes.</div></div>
         <div class="tabs" id="sportTabs">${['', 'NFL', 'NBA'].map((v) => `<button data-v="${v}" class="${v === sport ? 'active' : ''}">${v || 'All'}</button>`).join('')}</div></div>
-      <div class="card"><h2>Teams you've bet on</h2>
+      <div class="card"><h2>Teams you've bet on</h2>${bets.some((p) => p.parlay) ? LEGS_NOTE : ''}
         ${groupTable(groups, { label: (g) => `${teamLabelFromKey(g.key)} (${g.key.split('|')[0]})`, link: (g) => teamLink(g.key), empty: 'No team bets yet. Pick a team when you add a bet.' })}</div>
       <div class="card"><h2>Teams you've bet against</h2><div class="muted small" style="margin-bottom:8px">Moneyline & spread bets where this team was the opponent.</div>
         ${groupTable(against, { label: (g) => `${teamLabelFromKey(g.key)} (${g.key.split('|')[0]})`, link: (g) => teamLink(g.key), empty: 'Add an opponent on moneyline/spread bets to see this.' })}</div>
@@ -703,10 +764,14 @@
 
   function renderTeamDetail([sport, abbr]) {
     const name = teamName(sport, abbr);
-    const on = state.bets.filter((b) => b.sport === sport && b.team === abbr);
-    const against = state.bets.filter((b) => b.sport === sport && b.opponent === abbr && ['Moneyline', 'Spread'].includes(b.betType));
-    const s = S.summarize(on);
-    const sa = S.summarize(against);
+    const picks = S.picks(state.bets);
+    const isOn = (x) => x.sport === sport && x.team === abbr;
+    const isAgainst = (x) => x.sport === sport && x.opponent === abbr && ['Moneyline', 'Spread'].includes(x.betType);
+    const s = S.summarize(picks.filter(isOn));
+    const sa = S.summarize(picks.filter(isAgainst));
+    // whole bets (straight or parlay) that include a pick on / against this team
+    const on = state.bets.filter((b) => anyPick(b, isOn));
+    const against = state.bets.filter((b) => !on.includes(b) && anyPick(b, isAgainst));
     const noteId = `${sport}-${abbr}`;
     const doc = state.teamNotes.find((t) => t.id === noteId);
 
@@ -719,7 +784,8 @@
           ${notesLogHtml(doc && doc.entries, `Trends, matchups, coaching, travel spots for ${name}…`)}</div>
         <div class="card"><div class="card-head"><h2>Injury report</h2><a href="#/injuries?league=${sport.toLowerCase()}">Full ${esc(sport)} report</a></div><div id="teamInjuries"></div></div>
       </div>
-      <div class="card section"><div class="card-head"><h2>Bets on ${esc(name)}</h2><a href="#/bets?sport=${sport}&team=${encodeURIComponent(abbr)}">Open in Bets</a></div>
+      <div class="card section"><div class="card-head"><h2>Bets on ${esc(name)}</h2><a href="#/bets?team=${encodeURIComponent(abbr)}">Open in Bets</a></div>
+        ${on.some(hasLegs) ? '<div class="muted small" style="margin:-4px 0 8px">Includes parlays with a leg on this team. The record above counts each leg on its own.</div>' : ''}
         ${betsTable(sortBets(on))}</div>
       ${against.length ? `<div class="card section"><h2>Bets against ${esc(name)}</h2>${betsTable(sortBets(against))}</div>` : ''}`;
 
@@ -763,10 +829,10 @@
 
   function injuryTable(players, highlightPlayer) {
     if (!players.length) return '<div class="muted small">No injuries reported.</div>';
-    const hp = (highlightPlayer || '').toLowerCase();
+    const hps = [].concat(highlightPlayer || []).filter(Boolean).map((x) => x.toLowerCase());
     return `<div class="table-wrap"><table><thead><tr><th>Player</th><th>Pos</th><th>Status</th><th class="hide-sm">Injury</th><th class="hide-sm">Est. return</th><th>Update</th></tr></thead><tbody>${players
       .map(
-        (p) => `<tr${hp && p.name.toLowerCase().includes(hp) ? ' style="outline:2px solid var(--accent)"' : ''}>
+        (p) => `<tr${hps.some((h) => p.name.toLowerCase().includes(h)) ? ' style="outline:2px solid var(--accent)"' : ''}>
         <td><strong>${esc(p.name)}</strong></td><td>${esc(p.position)}</td>
         <td><span class="badge ${statusClass(p.status)}">${esc(p.status || '—')}</span></td>
         <td class="hide-sm">${esc(p.injury || '—')}</td>
@@ -1038,14 +1104,14 @@
   }
 
   function downloadCsv() {
-    const cols = ['date', 'sport', 'betType', 'team', 'opponent', 'player', 'propCategory', 'side', 'line', 'pick', 'book', 'odds', 'stake', 'result', 'profit', 'notes'];
+    const cols = ['date', 'sport', 'betType', 'team', 'opponent', 'player', 'propCategory', 'side', 'line', 'pick', 'legs', 'book', 'odds', 'stake', 'result', 'profit', 'notes'];
     const cell = (v) => {
       const s = String(v == null ? '' : v);
       return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
     };
     const rows = state.bets.map((b) =>
       cols
-        .map((c) => (c === 'profit' ? S.betProfit(b).toFixed(2) : c === 'notes' ? (b.notes || []).map((n) => n.text).join(' | ') : c === 'pick' ? betTitle(b) : b[c]))
+        .map((c) => (c === 'profit' ? S.betProfit(b).toFixed(2) : c === 'notes' ? (b.notes || []).map((n) => n.text).join(' | ') : c === 'pick' ? betTitle(b) : c === 'legs' ? (b.legs || []).map((l) => `${betTitle(l)} [${l.result || 'pending'}]`).join(' | ') : b[c]))
         .map(cell)
         .join(',')
     );
@@ -1077,7 +1143,7 @@
         <div class="field"><label>Date</label><input type="date" name="date" value="${esc(b.date)}" required></div>
         <div class="field"><label>Sport</label><select name="sport">${sel(['NFL', 'NBA', 'Other'], b.sport)}</select></div>
         <div class="field"><label>Bet type</label><select name="betType">${sel(window.BET_TYPES, b.betType)}</select></div>
-        <div class="field"><label>Result</label><select name="result">${sel(['pending', 'won', 'lost', 'push'], b.result)}</select></div>
+        <div class="field" data-show="result"><label>Result</label><select name="result">${sel(['pending', 'won', 'lost', 'push'], b.result)}</select></div>
         <div class="field" data-show="team"><label data-team-label>Team picked</label><span data-team-slot></span></div>
         <div class="field" data-show="opponent"><label>Opponent</label><span data-opp-slot></span></div>
         <div class="field" data-show="player"><label>Player</label><input name="player" value="${esc(b.player || '')}" placeholder="e.g. Patrick Mahomes" list="playerList">
@@ -1086,9 +1152,16 @@
           <datalist id="propList"></datalist></div>
         <div class="field" data-show="side"><label>Side</label><select name="side">${sel(window.SIDES, b.side || '')}</select></div>
         <div class="field" data-show="line"><label>Line</label><input name="line" type="number" step="0.5" value="${esc(b.line ?? '')}" placeholder="e.g. -3.5 or 24.5"></div>
+        <div class="field full" data-show="legs">
+          <label>Parlay legs</label>
+          <div id="legsEditor"></div>
+          <button type="button" class="btn" id="addLeg">+ Add leg</button>
+          <div class="hint">Give each leg its own result. The parlay's result is worked out from the legs: one losing leg loses it, and a pushed leg drops out. Each leg also counts toward that team's, player's and prop's success rate.</div>
+          ${(window.PROP_CATEGORIES ? Object.keys(window.PROP_CATEGORIES) : []).map((sp) => `<datalist id="legProps-${sp}">${window.PROP_CATEGORIES[sp].map((c) => `<option value="${esc(c)}">`).join('')}</datalist>`).join('')}
+        </div>
         <div class="field full"><label>Pick description <span class="muted">(optional — auto-generated if blank)</span></label>
-          <input name="pick" value="${esc(b.pick || '')}" placeholder="e.g. 3-leg parlay: KC ML + BUF -3 + Over 47.5"></div>
-        <div class="field"><label>Odds (American)</label><input name="odds" type="number" step="1" value="${esc(b.odds ?? -110)}" required><div class="hint">e.g. -110, +150</div></div>
+          <input name="pick" value="${esc(b.pick || '')}" placeholder="e.g. Sunday night special"></div>
+        <div class="field"><label data-odds-label>Odds (American)</label><input name="odds" type="number" step="1" value="${esc(b.odds ?? -110)}" required><div class="hint" id="oddsHint">e.g. -110, +150</div></div>
         <div class="field"><label>Stake ($)</label><input name="stake" type="number" step="0.01" min="0" value="${esc(b.stake ?? '')}" required></div>
         <div class="field"><label>Sportsbook</label><input name="book" value="${esc(b.book || '')}" list="bookList" placeholder="e.g. DraftKings">
           <datalist id="bookList">${[...new Set([...books, 'DraftKings', 'FanDuel', 'BetMGM', 'Caesars', 'ESPN Bet', 'Fanatics', 'bet365'])].map((x) => `<option value="${esc(x)}">`).join('')}</datalist></div>
@@ -1103,6 +1176,84 @@
     const teamSlot = f.querySelector('[data-team-slot]');
     const oppSlot = f.querySelector('[data-opp-slot]');
     let team = b.team || '', opp = b.opponent || '';
+    const LEG_TYPES = ['Moneyline', 'Spread', 'Total', 'Player Prop', 'Game Prop', 'Other'];
+    const newLeg = () => ({ id: uid(), sport: f.sport.value === 'Other' ? 'NFL' : f.sport.value, betType: 'Moneyline', result: 'pending' });
+    let legs = (b.legs || []).map((l) => ({ ...l }));
+    let oddsTouched = !!(bet && bet.odds !== undefined && (editing || legs.length));
+    const isParlay = () => f.betType.value === 'Parlay';
+    const legShow = (l) => {
+      const prop = window.PROP_TYPES.includes(l.betType);
+      return { player: l.betType === 'Player Prop', prop, side: prop || l.betType === 'Total', line: ['Spread', 'Total', 'Player Prop', 'Game Prop'].includes(l.betType) };
+    };
+    const legsEl = f.querySelector('#legsEditor');
+    const renderLegs = () => {
+      legsEl.innerHTML = legs
+        .map((l, i) => {
+          const sh = legShow(l);
+          const tOpts = teamOptions(l.sport, l.team);
+          const oOpts = teamOptions(l.sport, l.opponent);
+          const fld = (label, html, show = true) => (show ? `<div class="field"><label>${label}</label>${html}</div>` : '');
+          return `<div class="leg-card" data-i="${i}">
+            <div class="leg-head"><strong>Leg ${i + 1}</strong><span class="muted small leg-preview">${esc(betTitle(l))}</span>
+              <button type="button" class="btn sm danger" data-remove-leg="${i}">Remove</button></div>
+            <div class="leg-grid">
+              ${fld('Sport', `<select data-k="sport">${sel(['NFL', 'NBA', 'Other'], l.sport)}</select>`)}
+              ${fld('Type', `<select data-k="betType">${sel(LEG_TYPES, l.betType)}</select>`)}
+              ${fld(l.betType === 'Player Prop' ? "Player's team" : 'Team', tOpts ? `<select data-k="team">${tOpts}</select>` : `<input data-k="team" value="${esc(l.team || '')}" placeholder="Team">`)}
+              ${fld('Opponent', oOpts ? `<select data-k="opponent">${oOpts}</select>` : `<input data-k="opponent" value="${esc(l.opponent || '')}" placeholder="Opponent">`)}
+              ${fld('Player', `<input data-k="player" value="${esc(l.player || '')}" placeholder="e.g. Josh Allen" list="playerList">`, sh.player)}
+              ${fld('Prop category', `<input data-k="propCategory" value="${esc(l.propCategory || '')}" list="legProps-${esc(l.sport in window.PROP_CATEGORIES ? l.sport : 'Other')}" placeholder="e.g. Rushing Yards">`, sh.prop)}
+              ${fld('Side', `<select data-k="side">${sel(window.SIDES, l.side || '')}</select>`, sh.side)}
+              ${fld('Line', `<input data-k="line" type="number" step="0.5" value="${esc(l.line ?? '')}" placeholder="e.g. -3.5">`, sh.line)}
+              ${fld('Odds <span class="muted">(optional)</span>', `<input data-k="odds" type="number" step="1" value="${esc(l.odds ?? '')}" placeholder="e.g. -110">`)}
+              ${fld('Result', `<select data-k="result">${sel(['pending', 'won', 'lost', 'push'], l.result || 'pending')}</select>`)}
+            </div></div>`;
+        })
+        .join('');
+      updateParlay();
+    };
+    const updateParlay = () => {
+      if (!isParlay()) return;
+      const combined = S.parlayOdds(legs);
+      const hint = f.querySelector('#oddsHint');
+      if (combined != null && !oddsTouched) f.odds.value = combined;
+      hint.innerHTML =
+        combined != null
+          ? `Combined leg odds: <strong>${oddsStr(combined)}</strong>${String(combined) !== f.odds.value ? ' <button type="button" class="btn sm" id="useLegOdds">Use</button>' : ''} <span class="muted">(change it if your book paid differently, e.g. a boost)</span>`
+          : legs.length
+          ? 'Enter the parlay odds from your ticket, or fill in each leg\'s odds to calculate them.'
+          : 'e.g. +260';
+      const use = hint.querySelector('#useLegOdds');
+      if (use) use.addEventListener('click', () => { f.odds.value = combined; oddsTouched = false; updateParlay(); });
+      f.querySelector('[data-show="result"]').hidden = legs.length > 0;
+      updateToWin();
+    };
+    legsEl.addEventListener('input', (e) => {
+      const k = e.target.dataset.k;
+      const card = e.target.closest('[data-i]');
+      if (!k || !card) return;
+      const l = legs[Number(card.dataset.i)];
+      l[k] = e.target.value;
+      if (k === 'sport' || k === 'betType') {
+        if (k === 'sport') l.team = l.opponent = '';
+        renderLegs();
+        return;
+      }
+      card.querySelector('.leg-preview').textContent = betTitle(l);
+      updateParlay();
+    });
+    legsEl.addEventListener('click', (e) => {
+      const rm = e.target.closest('[data-remove-leg]');
+      if (!rm) return;
+      legs.splice(Number(rm.dataset.removeLeg), 1);
+      renderLegs();
+    });
+    f.querySelector('#addLeg').addEventListener('click', () => {
+      legs.push(newLeg());
+      renderLegs();
+      const cards = legsEl.querySelectorAll('.leg-card');
+      cards[cards.length - 1].scrollIntoView({ block: 'nearest' });
+    });
 
     const sync = () => {
       const sport = f.sport.value;
@@ -1115,8 +1266,15 @@
       f.team.addEventListener('change', () => (team = f.team.value));
       f.opponent.addEventListener('change', () => (opp = f.opponent.value));
       f.querySelector('[data-team-label]').textContent = type === 'Player Prop' ? "Player's team" : type === 'Total' || type === 'Game Prop' ? 'Team / game' : 'Team picked';
-      const show = { team: type !== 'Parlay', opponent: !['Parlay', 'Future'].includes(type), player: type === 'Player Prop', prop, side: prop || type === 'Total', line: ['Spread', 'Total', 'Player Prop', 'Game Prop'].includes(type) };
+      const show = { team: type !== 'Parlay', opponent: !['Parlay', 'Future'].includes(type), player: type === 'Player Prop', prop, side: prop || type === 'Total', line: ['Spread', 'Total', 'Player Prop', 'Game Prop'].includes(type), legs: type === 'Parlay', result: !(type === 'Parlay' && legs.length) };
       f.querySelectorAll('[data-show]').forEach((el) => (el.hidden = !show[el.dataset.show]));
+      f.querySelector('[data-odds-label]').textContent = type === 'Parlay' ? 'Parlay odds (American)' : 'Odds (American)';
+      if (type === 'Parlay') {
+        if (!legs.length) legs.push(newLeg(), newLeg());
+        renderLegs();
+      } else {
+        f.querySelector('#oddsHint').textContent = 'e.g. -110, +150';
+      }
       f.querySelector('#propList').innerHTML = (window.PROP_CATEGORIES[sport] || window.PROP_CATEGORIES.Other).map((c) => `<option value="${esc(c)}">`).join('');
       updateToWin();
     };
@@ -1130,7 +1288,11 @@
       sync();
     });
     f.betType.addEventListener('change', sync);
-    f.odds.addEventListener('input', updateToWin);
+    f.odds.addEventListener('input', () => {
+      oddsTouched = true;
+      updateParlay();
+      updateToWin();
+    });
     f.stake.addEventListener('input', updateToWin);
     sync();
 
@@ -1143,12 +1305,38 @@
       }
       const type = f.betType.value;
       const visible = (name) => !f.querySelector(`[data-show="${name}"]`).hidden;
+      let cleanLegs = [];
+      if (type === 'Parlay') {
+        for (const [i, l] of legs.entries()) {
+          if (l.odds !== '' && l.odds != null && Math.abs(Number(l.odds)) < 100) {
+            alert(`Leg ${i + 1}: odds must be +100 or higher, or -100 or lower (or leave them blank).`);
+            return;
+          }
+        }
+        cleanLegs = legs.map((l) => {
+          const sh = legShow(l);
+          return {
+            id: l.id || uid(),
+            sport: l.sport,
+            betType: l.betType,
+            team: (l.team || '').trim(),
+            opponent: (l.opponent || '').trim(),
+            player: sh.player ? (l.player || '').trim() : '',
+            propCategory: sh.prop ? (l.propCategory || '').trim() : '',
+            side: sh.side ? l.side || '' : '',
+            line: sh.line && l.line !== '' && l.line != null ? Number(l.line) : '',
+            odds: l.odds !== '' && l.odds != null ? Number(l.odds) : '',
+            result: l.result || 'pending',
+          };
+        });
+      }
       const data = {
         ...(editing ? bet : {}),
         date: f.date.value,
         sport: f.sport.value,
         betType: type,
-        result: f.result.value,
+        result: cleanLegs.length ? S.parlayResult(cleanLegs) : f.result.value,
+        legs: cleanLegs,
         team: visible('team') ? f.team.value.trim() : '',
         opponent: visible('opponent') ? f.opponent.value.trim() : '',
         player: visible('player') ? f.player.value.trim() : '',

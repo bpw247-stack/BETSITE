@@ -11,6 +11,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { parseEspnInjuries } = require('./lib/injuries');
 const { parseEspnScoreboard, espnDay } = require('./lib/schedule');
+const { seasonsToSearch, meetingsFromSchedule, parseGameSummary, summarizeH2H } = require('./lib/h2h');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -143,6 +144,61 @@ async function getSchedule(league, days, force) {
   return { ...data, cached: false };
 }
 
+// ---------- head-to-head ----------
+
+const H2H_TTL_MS = 6 * 60 * 60 * 1000;
+const h2hCache = {}; // `${league}:${a}:${b}` -> { at, data }
+const summaryCache = new Map(); // event id -> parsed summary (finished games never change)
+
+async function espnJson(league, pathAndQuery) {
+  const url = `https://site.api.espn.com/apis/site/v2/sports/${LEAGUE_PATHS[league]}/${pathAndQuery}`;
+  const r = await fetch(url, { headers: { 'User-Agent': 'BetSite/1.0' }, signal: AbortSignal.timeout(15000) });
+  if (!r.ok) throw new Error(`ESPN responded ${r.status}`);
+  return r.json();
+}
+
+async function getH2H(league, a, b, n, force) {
+  const key = `${league}:${a}:${b}:${n}`;
+  const cached = h2hCache[key];
+  if (!force && cached && Date.now() - cached.at < H2H_TTL_MS) return cached.data;
+
+  // 1. find past meetings in team A's schedules (regular season + playoffs)
+  const lookups = seasonsToSearch(league).flatMap((season) => [2, 3].map((type) => ({ season, type })));
+  const results = await Promise.allSettled(
+    lookups.map(({ season, type }) => espnJson(league, `teams/${encodeURIComponent(a.toLowerCase())}/schedule?season=${season}&seasontype=${type}`))
+  );
+  if (results.every((r) => r.status === 'rejected')) throw results[0].reason;
+  const seen = new Set();
+  const meetings = results
+    .filter((r) => r.status === 'fulfilled')
+    .flatMap((r) => meetingsFromSchedule(r.value, b))
+    .filter((m) => m.id && !seen.has(m.id) && seen.add(m.id))
+    .sort((x, y) => y.date.localeCompare(x.date))
+    .slice(0, n);
+
+  // 2. box score + leaders for each meeting
+  const games = (
+    await Promise.all(
+      meetings.map(async (m) => {
+        if (!summaryCache.has(m.id)) {
+          try {
+            const g = parseGameSummary(await espnJson(league, `summary?event=${encodeURIComponent(m.id)}`), league);
+            if (g) summaryCache.set(m.id, { ...g, id: m.id, postseason: m.postseason });
+          } catch {
+            return null;
+          }
+        }
+        return summaryCache.get(m.id) || null;
+      })
+    )
+  ).filter(Boolean);
+  if (summaryCache.size > 2000) summaryCache.delete(summaryCache.keys().next().value);
+
+  const data = { league, a, b, fetchedAt: new Date().toISOString(), summary: summarizeH2H(games, a, b), games };
+  h2hCache[key] = { at: Date.now(), data };
+  return data;
+}
+
 // ---------- API ----------
 
 async function handleApi(req, res, url) {
@@ -171,6 +227,20 @@ async function handleApi(req, res, url) {
       const stale = scheduleCache[`${league}:${days}`];
       if (stale) return send(res, 200, { ...stale.data, cached: true, stale: true, error: err.message });
       return send(res, 502, { error: `Could not load ${league.toUpperCase()} schedule: ${err.message}` });
+    }
+  }
+
+  if (resource === 'h2h') {
+    const league = (id || '').toLowerCase();
+    const a = String(url.searchParams.get('a') || '').toUpperCase();
+    const b = String(url.searchParams.get('b') || '').toUpperCase();
+    if (!LEAGUE_PATHS[league]) return send(res, 404, { error: 'Unknown league' });
+    if (!/^[A-Z]{2,4}$/.test(a) || !/^[A-Z]{2,4}$/.test(b) || a === b) return send(res, 400, { error: 'Pass two different team abbreviations as ?a=&b=' });
+    const n = Math.min(10, Math.max(1, parseInt(url.searchParams.get('n'), 10) || 5));
+    try {
+      return send(res, 200, await getH2H(league, a, b, n, url.searchParams.has('refresh')));
+    } catch (err) {
+      return send(res, 502, { error: `Could not load previous matchups: ${err.message}` });
     }
   }
 

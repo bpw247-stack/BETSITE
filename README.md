@@ -11,6 +11,7 @@ A personal website for tracking your sports bets: picks, money placed, wins and 
 - **Prop success rates**: by prop category (Passing Yards, Points, PRA…), by side, by category × side and by player.
 - **Team success rates**: record, win %, money staked, P/L and ROI for every team you've backed, and for teams you've bet *against*. Each team has its own page with its bets, live injuries and notes.
 - **Matchups**: upcoming NFL or NBA games (today, or the next 3, 7 or 14 days) with kickoff/tip time, TV, records, the betting line and over/under, and live scores. Each game lists its notable injuries. For the NFL that's every QB plus RB/WR/TE not on a season-long list, and for the NBA it's anyone out, doubtful, questionable or day-to-day; a toggle shows all injuries. NFL weeks also get a **QB watch** table. Games you have pending bets or parlay legs on are highlighted, and each game has buttons to log a bet on either team with the matchup pre-filled.
+- **Previous matchups** (on every Matchups game card): the last 5 meetings between the two teams over recent seasons, playoffs included. You get the series record, average total points compared with this game's over/under, and average margin. Each game is tagged with storylines: 💥 blowouts, ⏱️ close games, ⚡ offensive dominance (35+ pts or 450+ yds in the NFL; 130+ pts or 55%+ FG in the NBA) and 🛡️ defensive dominance (allowed 10 or fewer pts, or forced 3+ turnovers; 95 or fewer pts in the NBA). 🔥 marks big individual games: 300+ passing yards or 3+ TD passes, 100+ rushing or receiving yards, or 2+ TDs; 30+ points, 15+ rebounds or 10+ assists in the NBA.
 - **Injury reports**: live NFL and NBA injury lists from ESPN's public feed, cached for 15 minutes. You can filter by team, status or player, or show only teams you've bet on. Teams with pending bets are highlighted, and injuries also appear on each bet and team page.
 - **Notes**:
   - A **general notes** page with titles, tags, pinning and search.
@@ -54,6 +55,7 @@ npm test
 server.js          HTTP server: static files, JSON storage, REST API, injury proxy
 lib/injuries.js    Normalizes ESPN's injury feed
 lib/schedule.js    Normalizes ESPN's scoreboard (upcoming games)
+lib/h2h.js         Past meetings, box-score leaders and notable-performance rules
 public/            Frontend (vanilla JS, no build step)
   index.html
   app.js           Views: dashboard, bets, props, teams, injuries, notes, backup
@@ -71,5 +73,6 @@ test/              node:test suites
 | GET/PUT/DELETE | `/api/{collection}/{id}` | read / update / delete |
 | GET | `/api/injuries/nfl`, `/api/injuries/nba` | injury report (`?refresh` skips the cache) |
 | GET | `/api/schedule/nfl`, `/api/schedule/nba` | upcoming games (`?days=1-21`, `?refresh`) |
+| GET | `/api/h2h/{nfl,nba}?a=KC&b=BUF` | previous meetings with leaders and storylines (`?n=1-10`) |
 | GET | `/api/export` | full JSON backup |
 | POST | `/api/import` | restore (replaces all data) |

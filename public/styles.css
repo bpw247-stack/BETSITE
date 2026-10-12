@@ -269,3 +269,20 @@ td .sub.show-sm-block { display: none; }
 .game-actions { margin-top: 4px; }
 .qb-watch { border-color: var(--warn); }
 @media (max-width: 640px) { .game-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* ---------- previous matchups ---------- */
+.h2h { border-top: 1px solid var(--border); padding-top: 6px; }
+.h2h > summary { cursor: pointer; font-weight: 600; font-size: .9rem; padding: 2px 0; color: var(--accent); }
+.h2h-body { padding-top: 6px; display: flex; flex-direction: column; gap: 8px; }
+.h2h-summary { font-size: .85rem; background: var(--surface-2); border-radius: 6px; padding: 6px 8px; }
+.h2h-game { border-left: 3px solid var(--border); padding: 2px 0 2px 8px; }
+.h2h-line { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.h2h-score { font-variant-numeric: tabular-nums; font-size: .92rem; }
+.h2h-win { font-weight: 700; }
+.h2h-notes { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.h2h-note { font-size: .76rem; padding: 1px 7px; border-radius: 999px; background: var(--neutral-bg); color: var(--text-2); }
+.h2h-note.offense { background: var(--warn-bg); color: var(--warn); }
+.h2h-note.defense { background: var(--good-bg); color: var(--good); }
+.h2h-note.blowout { background: var(--bad-bg); color: var(--bad); }
+.h2h-big { font-size: .85rem; margin-top: 4px; }
+.h2h-leaders { margin-top: 3px; line-height: 1.4; }

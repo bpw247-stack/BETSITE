@@ -14,6 +14,8 @@
     teamNotes: [],
     injuries: {}, // league -> { loading, data, error }
     schedule: {}, // `${league}:${days}` -> { loading, data, error }
+    h2h: {}, // `${league}:${a}:${b}` -> { loading, data, error }
+    h2hOpen: new Set(), // keys of expanded "previous matchups" panels
     sort: { key: 'date', dir: -1 },
   };
 
@@ -978,6 +980,53 @@
     return entry.promise;
   }
 
+  function loadH2H(league, a, b) {
+    const key = `${league}:${a}:${b}`;
+    const cur = state.h2h[key];
+    if (cur && (cur.loading || cur.data)) return cur.promise || Promise.resolve(cur);
+    const entry = { loading: true };
+    entry.promise = api('GET', `/api/h2h/${league}?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}&n=5`)
+      .then((data) => Object.assign(entry, { loading: false, data, error: null }))
+      .catch((err) => Object.assign(entry, { loading: false, error: err.message }));
+    state.h2h[key] = entry;
+    return entry.promise;
+  }
+
+  const NOTE_ICONS = { blowout: '💥', close: '⏱️', offense: '⚡', defense: '🛡️' };
+
+  function h2hHtml(league, a, b, overUnder) {
+    const entry = state.h2h[`${league}:${a}:${b}`];
+    if (!entry || entry.loading) return '<div class="muted small">Loading previous matchups…</div>';
+    if (entry.error) return `<div class="alert error small">${esc(entry.error)}</div>`;
+    const { summary: s, games } = entry.data;
+    if (!games.length) return '<div class="muted small">No meetings found in recent seasons.</div>';
+    const lead = s.wins[a] === s.wins[b] ? `Series tied ${s.wins[a]}-${s.wins[b]}` : s.wins[a] > s.wins[b] ? `${a} leads ${s.wins[a]}-${s.wins[b]}` : `${b} leads ${s.wins[b]}-${s.wins[a]}`;
+    const ouCompare =
+      overUnder != null && s.avgTotal != null
+        ? ` <span class="muted">(this game's O/U ${esc(overUnder)}: ${s.avgTotal > overUnder ? 'past meetings ran higher' : s.avgTotal < overUnder ? 'past meetings ran lower' : 'right on it'})</span>`
+        : '';
+    const summary = `<div class="h2h-summary"><strong>Last ${plural(s.games, 'meeting')}:</strong> ${esc(lead)}${s.ties ? `, ${s.ties} tie${s.ties > 1 ? 's' : ''}` : ''}
+      · Avg total <strong>${s.avgTotal}</strong> pts${ouCompare}
+      · Avg margin ${esc(a)} ${s.avgMargin > 0 ? '+' : ''}${s.avgMargin}</div>`;
+    const rows = games
+      .map((g) => {
+        const away = g.teams.find((t) => t.homeAway === 'away') || g.teams[0];
+        const home = g.teams.find((t) => t !== away);
+        const side = (t) => `<span class="${g.winner === t.abbr ? 'h2h-win' : ''}">${esc(t.abbr)} ${t.score}</span>`;
+        const big = g.leaders.filter((l) => l.big);
+        const rest = g.leaders.filter((l) => !l.big);
+        return `<div class="h2h-game">
+          <div class="h2h-line"><span class="muted small">${fmtDate(g.date.slice(0, 10))}${g.postseason ? ' · <span class="chip">Playoffs</span>' : ''}</span>
+            <span class="h2h-score">${side(away)} <span class="muted">@</span> ${side(home)}</span></div>
+          ${g.notes.length ? `<div class="h2h-notes">${g.notes.map((n) => `<span class="h2h-note ${esc(n.type)}">${NOTE_ICONS[n.type] || ''} ${esc(n.text)}</span>`).join('')}</div>` : ''}
+          ${big.length ? `<div class="h2h-big">${big.map((l) => `<div>🔥 <strong>${esc(l.player)}</strong> <span class="muted small">${esc(l.team)}${l.position ? ' ' + esc(l.position) : ''}</span> · ${esc(l.display)}</div>`).join('')}</div>` : ''}
+          ${rest.length ? `<div class="muted small h2h-leaders">${rest.map((l) => `${esc(l.label)}: ${esc(l.player)} (${esc(l.team)}) ${esc(l.display)}`).join(' · ')}</div>` : ''}
+        </div>`;
+      })
+      .join('');
+    return summary + rows;
+  }
+
   const NFL_KEY_POS = ['QB', 'RB', 'WR', 'TE'];
   const isLongTerm = (status) => /injured reserve|^ir$|pup|physically unable|suspen|non-football/i.test(String(status));
   const severity = (status) => ({ out: 0, doubtful: 1, questionable: 2 }[statusClass(status)] ?? 3);
@@ -1087,6 +1136,10 @@
           ${g.spread || g.overUnder != null ? `<div class="game-lines">${g.spread ? `Line: <strong>${esc(g.spread)}</strong>` : ''}${g.spread && g.overUnder != null ? ' · ' : ''}${g.overUnder != null ? `O/U <strong>${esc(g.overUnder)}</strong>` : ''}</div>` : ''}
           ${g.venue ? `<div class="muted small">${esc(g.venue)}</div>` : ''}
           <div class="game-inj">${injBlock(g.a, g.away)}${injBlock(g.h, g.home)}</div>
+          <details class="h2h" data-h2h="${esc(`${league}:${g.a}:${g.h}`)}" data-a="${esc(g.a)}" data-b="${esc(g.h)}" data-ou="${g.overUnder ?? ''}"${state.h2hOpen.has(`${league}:${g.a}:${g.h}`) ? ' open' : ''}>
+            <summary>📜 Previous matchups</summary>
+            <div class="h2h-body">${state.h2hOpen.has(`${league}:${g.a}:${g.h}`) ? h2hHtml(league, g.a, g.h, g.overUnder) : ''}</div>
+          </details>
           ${my.length ? `<div class="game-mybets">📌 You have ${plural(my.length, 'pending pick')} on this game: ${my.map((x) => `<a href="#/bet/${encodeURIComponent((x.parlay || x).id)}">${esc(betTitle(x))}${x.parlay ? ' (parlay leg)' : ''}</a>`).join(', ')}</div>` : ''}
           <div class="btn-row game-actions">
             <button class="btn sm" data-bet-game="${esc(g.id)}" data-team="${esc(g.a)}" data-opp="${esc(g.h)}" data-date="${esc(g.date)}">+ Bet ${esc(g.a)}</button>
@@ -1140,6 +1193,21 @@
       render();
       toast('Matchups refreshed');
     });
+    app.querySelectorAll('details[data-h2h]').forEach((det) =>
+      det.addEventListener('toggle', () => {
+        const key = det.dataset.h2h;
+        if (!det.open) return state.h2hOpen.delete(key);
+        state.h2hOpen.add(key);
+        const { a, b } = det.dataset;
+        const ou = det.dataset.ou === '' ? null : Number(det.dataset.ou);
+        const body = det.querySelector('.h2h-body');
+        body.innerHTML = h2hHtml(league, a, b, ou);
+        loadH2H(league, a, b).then(() => {
+          if (body.isConnected) body.innerHTML = h2hHtml(league, a, b, ou);
+          else if (state.h2hOpen.has(key)) render(); // page was redrawn while loading
+        });
+      })
+    );
     app.querySelectorAll('[data-bet-game]').forEach((btn) =>
       btn.addEventListener('click', () => {
         const d = new Date(btn.dataset.date);

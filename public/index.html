@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BetSite Tracker</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/dashboard">🎯 BetSite</a>
+    <nav class="nav" id="nav">
+      <a href="#/dashboard" data-view="dashboard">Dashboard</a>
+      <a href="#/bets" data-view="bets">Bets</a>
+      <a href="#/props" data-view="props">Props</a>
+      <a href="#/teams" data-view="teams">Teams</a>
+      <a href="#/injuries" data-view="injuries">Injuries</a>
+      <a href="#/notes" data-view="notes">Notes</a>
+      <a href="#/settings" data-view="settings">Backup</a>
+    </nav>
+    <button class="btn primary" id="addBetBtn">+ Add bet</button>
+  </header>
+
+  <main id="app" class="container" aria-live="polite"></main>
+
+  <dialog id="modal">
+    <form method="dialog" id="modalForm"></form>
+  </dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <div id="tooltip" class="tooltip" hidden></div>
+
+  <script src="teams.js"></script>
+  <script src="stats.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

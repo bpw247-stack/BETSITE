@@ -134,12 +134,33 @@ async function getSchedule(league, days, force) {
   const cached = scheduleCache[key];
   if (!force && cached && Date.now() - cached.at < SCHEDULE_TTL_MS) return { ...cached.data, cached: true };
   const now = new Date();
-  const end = new Date(now.getTime() + (days - 1) * 86400000);
-  const range = `${espnDay(now)}-${espnDay(end)}`;
-  const url = `https://site.api.espn.com/apis/site/v2/sports/${LEAGUE_PATHS[league]}/scoreboard?dates=${range}&limit=300`;
-  const r = await fetch(url, { headers: { 'User-Agent': 'BetSite/1.0' }, signal: AbortSignal.timeout(15000) });
-  if (!r.ok) throw new Error(`ESPN responded ${r.status}`);
-  const data = { league, days, range, fetchedAt: new Date().toISOString(), games: parseEspnScoreboard(await r.json()) };
+  const dayList = Array.from({ length: days }, (_, i) => espnDay(new Date(now.getTime() + i * 86400000)));
+  const range = `${dayList[0]}-${dayList[dayList.length - 1]}`;
+
+  // ESPN accepts a date range for some leagues/endpoints but rejects it (400) for others,
+  // so try the range first and fall back to one request per day.
+  let payloads;
+  try {
+    payloads = [await espnJson(league, `scoreboard?dates=${days === 1 ? dayList[0] : range}`)];
+  } catch (rangeErr) {
+    const perDay = await Promise.allSettled(dayList.map((d) => espnJson(league, `scoreboard?dates=${d}`)));
+    payloads = perDay.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+    if (!payloads.length) {
+      // last resort: the default scoreboard (today / the current NFL week)
+      try {
+        payloads = [await espnJson(league, 'scoreboard')];
+      } catch {
+        throw rangeErr;
+      }
+    }
+  }
+
+  const seen = new Set();
+  const games = payloads
+    .flatMap((p) => parseEspnScoreboard(p))
+    .filter((g) => !seen.has(g.id) && seen.add(g.id))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const data = { league, days, range, fetchedAt: new Date().toISOString(), games };
   scheduleCache[key] = { at: Date.now(), data };
   return { ...data, cached: false };
 }
@@ -153,7 +174,10 @@ const summaryCache = new Map(); // event id -> parsed summary (finished games ne
 async function espnJson(league, pathAndQuery) {
   const url = `https://site.api.espn.com/apis/site/v2/sports/${LEAGUE_PATHS[league]}/${pathAndQuery}`;
   const r = await fetch(url, { headers: { 'User-Agent': 'BetSite/1.0' }, signal: AbortSignal.timeout(15000) });
-  if (!r.ok) throw new Error(`ESPN responded ${r.status}`);
+  if (!r.ok) {
+    console.warn(`ESPN ${r.status}: ${url}`);
+    throw new Error(`ESPN responded ${r.status}`);
+  }
   return r.json();
 }
 

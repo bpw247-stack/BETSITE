@@ -133,6 +133,10 @@
       body: body ? JSON.stringify(body) : undefined,
     });
     if (r.status === 204) return null;
+    if (r.status === 401 && url !== '/api/auth/logout') {
+      location.href = '/login';
+      throw new Error('Sign in required');
+    }
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
     return data;
@@ -1654,6 +1658,67 @@
 
   // ---------- settings / backup ----------
 
+  async function renderPhoneCard() {
+    const el = document.getElementById('phoneCard');
+    let st;
+    try {
+      st = await api('GET', '/api/auth/status');
+    } catch (err) {
+      el.innerHTML = `<h2>📱 Phone access</h2><div class="alert error">${esc(err.message)}</div>`;
+      return;
+    }
+    if (!el.isConnected) return;
+    if (!st.local) {
+      el.innerHTML = `<h2>📱 Phone access</h2><p>You're signed in on this device. Password changes can only be made on the computer running BetSite.</p><button class="btn" id="signOut">Sign out of this device</button>`;
+      el.querySelector('#signOut').addEventListener('click', async () => {
+        await api('POST', '/api/auth/logout');
+        location.href = '/login';
+      });
+      return;
+    }
+    const wifi = st.urls.filter((u) => u.kind === 'wifi');
+    const ts = st.urls.filter((u) => u.kind === 'tailscale');
+    const named = st.urls.find((u) => u.kind === 'name');
+    const urlList = (list) => list.map((u) => `<code class="phone-url">${esc(u.url)}</code>`).join(' or ');
+    el.innerHTML = `<div class="card-head"><h2>📱 Phone access</h2><span class="badge ${st.passwordSet ? 'won' : 'pending'}">${st.passwordSet ? 'On' : 'Off'}</span></div>
+      ${st.passwordSet
+        ? `<p style="margin-top:0">Other devices can sign in with your password. ${st.sessions ? `${plural(st.sessions, 'device')} signed in.` : ''}</p>
+           <ol class="phone-steps">
+             <li>Connect your phone to the <strong>same Wi-Fi</strong> as this computer.</li>
+             <li>On your phone, open Safari or Chrome and go to ${wifi.length ? urlList(wifi) : named ? urlList([named]) : "this computer's address"}${wifi.length && named ? ` <span class="muted small">(or ${esc(named.url)})</span>` : ''}.</li>
+             <li>Enter your password. Then tap <strong>Share → Add to Home Screen</strong> to get a BetSite app icon.</li>
+           </ol>
+           ${ts.length ? `<p class="small">🌍 Away from home (Tailscale): ${urlList(ts)}</p>` : '<p class="muted small">🌍 Want it away from home too? Install the free Tailscale app on this computer and your phone (same account), then reload this page to see a second address that works anywhere.</p>'}
+           <p class="muted small">This computer must be on and running BetSite (the Terminal window open) for your phone to reach it.</p>`
+        : '<p style="margin-top:0">Set a password to use BetSite from your phone. Until then, only this computer can open it.</p>'}
+      <form id="pwForm" class="form-grid">
+        <div class="field"><label>${st.passwordSet ? 'New password' : 'Password'}</label><input name="pw" type="password" minlength="6" autocomplete="new-password" required></div>
+        <div class="field"><label>Type it again</label><input name="pw2" type="password" minlength="6" autocomplete="new-password" required></div>
+        <div class="full btn-row"><button class="btn primary" type="submit">${st.passwordSet ? 'Change password' : 'Turn on phone access'}</button>
+          ${st.passwordSet ? '<button class="btn danger" type="button" id="pwOff">Turn off phone access</button>' : ''}</div>
+      </form>`;
+    el.querySelector('#pwForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      if (f.pw.value !== f.pw2.value) return alert("The two passwords don't match.");
+      try {
+        await api('POST', '/api/auth/password', { password: f.pw.value });
+        toast(st.passwordSet ? 'Password changed. Other devices need to sign in again' : 'Phone access is on');
+        renderPhoneCard();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+    const off = el.querySelector('#pwOff');
+    if (off)
+      off.addEventListener('click', async () => {
+        if (!confirm('Turn off phone access? Other devices will be signed out and blocked.')) return;
+        await api('POST', '/api/auth/disable');
+        toast('Phone access is off');
+        renderPhoneCard();
+      });
+  }
+
   function bankrollCardHtml() {
     const s = state.settings || {};
     const z = sizing();
@@ -1693,6 +1758,7 @@
   function renderSettings() {
     app.innerHTML = `
       <div class="page-head"><div><h1>Settings & backup</h1><div class="muted">Your data is stored on this computer in <code>data/db.json</code>.</div></div></div>
+      <div class="card" id="phoneCard"><h2>📱 Phone access</h2><div class="muted">Loading…</div></div>
       ${bankrollCardHtml()}
       ${updatesCardHtml()}
       <div class="grid cols-2 section">
@@ -1706,6 +1772,7 @@
         <dt>Bet notes</dt><dd>${state.bets.reduce((n, b) => n + (b.notes || []).length, 0)}</dd>
         <dt>Team notes</dt><dd>${state.teamNotes.reduce((n, t) => n + (t.entries || []).length, 0)}</dd></dl></div>`;
     document.getElementById('csvBtn').addEventListener('click', downloadCsv);
+    renderPhoneCard();
     document.getElementById('bankrollForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const f = e.target;

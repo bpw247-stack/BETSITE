@@ -9,6 +9,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
 const { parseEspnInjuries } = require('./lib/injuries');
 const { parseEspnScoreboard, espnDay } = require('./lib/schedule');
 const { seasonsToSearch, meetingsFromSchedule, parseGameSummary, summarizeH2H } = require('./lib/h2h');
@@ -16,6 +17,7 @@ const { createUpdater } = require('./lib/updater');
 const niche = require('./lib/niche');
 const grading = require('./lib/grading');
 const weather = require('./lib/weather');
+const { createAuth, isLocalRequest, loginPage, blockedPage } = require('./lib/auth');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -28,6 +30,7 @@ const UPDATE_CHECK_TTL_MS = 10 * 60 * 1000;
 const RESTART_CODE = 75; // start.js relaunches the server when it exits with this code
 
 const updater = createUpdater({ appDir: __dirname, dataDir: path.dirname(DATA_FILE) });
+const auth = createAuth({ dataDir: path.dirname(DATA_FILE) });
 let updateCheckCache = null;
 const BOOT_ID = crypto.randomUUID(); // changes on every restart, so the page can tell the new server is up
 
@@ -485,6 +488,30 @@ async function getWeather(home, kickoff, { neutral, indoor } = {}) {
   return data;
 }
 
+// ---------- phone access ----------
+
+async function handleAuthApi(req, res, url, local) {
+  const action = url.pathname.split('/')[3];
+  if (action === 'status' && req.method === 'GET') {
+    return send(res, 200, { passwordSet: auth.passwordSet(), local, sessions: auth.sessionCount(), urls: local ? lanUrls() : [] });
+  }
+  if (action === 'logout' && req.method === 'POST') {
+    auth.endSession(auth.tokenFrom(req));
+    return send(res, 200, { ok: true }, { 'Set-Cookie': auth.clearCookieHeader() });
+  }
+  if (!local) return send(res, 403, { error: 'Change phone access from the computer running BetSite.' });
+  if (action === 'password' && req.method === 'POST') {
+    const body = await readBody(req);
+    auth.setPassword(body.password);
+    return send(res, 200, { ok: true });
+  }
+  if (action === 'disable' && req.method === 'POST') {
+    auth.disable();
+    return send(res, 200, { ok: true });
+  }
+  return send(res, 404, { error: 'Not found' });
+}
+
 // ---------- API ----------
 
 async function handleApi(req, res, url) {
@@ -666,9 +693,80 @@ async function handleApi(req, res, url) {
   return send(res, 405, { error: 'Method not allowed' });
 }
 
+// Addresses other devices can use to reach this computer.
+function lanUrls() {
+  const out = [];
+  for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
+    for (const a of addrs || []) {
+      if (a.family !== 'IPv4' || a.internal) continue;
+      const tailscale = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(a.address) || /tailscale|utun/i.test(name);
+      out.push({ url: `http://${a.address}:${PORT}`, kind: tailscale ? 'tailscale' : 'wifi' });
+    }
+  }
+  const host = os.hostname();
+  if (host) out.push({ url: `http://${host.endsWith('.local') ? host : host + '.local'}:${PORT}`, kind: 'name' });
+  return out;
+}
+
+function readRaw(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > 10000) return req.destroy();
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
+// Requests from other devices: blocked until a password is set, then sign-in required.
+// Returns true when the request has been answered here.
+async function remoteGate(req, res, url) {
+  const isApi = url.pathname.startsWith('/api/');
+  if (!auth.passwordSet()) {
+    if (isApi) send(res, 403, { error: 'Phone access is off. Set a password in Settings on the computer running BetSite.' });
+    else send(res, 403, blockedPage(), { 'Content-Type': 'text/html; charset=utf-8' });
+    return true;
+  }
+  if (url.pathname === '/login') {
+    if (req.method === 'POST') {
+      const ip = req.socket.remoteAddress;
+      const pw = new URLSearchParams(await readRaw(req)).get('password') || '';
+      if (!auth.allowAttempt(ip)) {
+        send(res, 429, loginPage('Too many tries. Wait 15 minutes and try again.'), { 'Content-Type': 'text/html; charset=utf-8' });
+      } else if (auth.verify(pw)) {
+        res.writeHead(302, { Location: '/', 'Set-Cookie': auth.cookieHeader(auth.createSession(req.headers['user-agent'])) });
+        res.end();
+      } else {
+        send(res, 401, loginPage('Wrong password.'), { 'Content-Type': 'text/html; charset=utf-8' });
+      }
+    } else {
+      send(res, 200, loginPage(), { 'Content-Type': 'text/html; charset=utf-8' });
+    }
+    return true;
+  }
+  if (auth.validSession(auth.tokenFrom(req))) return false;
+  if (isApi) send(res, 401, { error: 'Sign in required' });
+  else {
+    res.writeHead(302, { Location: '/login' });
+    res.end();
+  }
+  return true;
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   try {
+    const local = isLocalRequest(req);
+    if (!local && (await remoteGate(req, res, url))) return;
+    if (url.pathname === '/login') {
+      res.writeHead(302, { Location: '/' });
+      return res.end();
+    }
+    if (url.pathname.startsWith('/api/auth/')) return await handleAuthApi(req, res, url, local);
     if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'Method not allowed');
     serveStatic(req, res, url.pathname);
@@ -681,6 +779,10 @@ const server = http.createServer(async (req, res) => {
 if (require.main === module) {
   server.listen(PORT, HOST, () => {
     console.log(`BetSite running at http://localhost:${PORT}  (data: ${DATA_FILE})`);
+    if (auth.passwordSet()) {
+      const wifi = lanUrls().find((u) => u.kind === 'wifi');
+      if (wifi) console.log(`On your phone (same Wi-Fi): ${wifi.url}`);
+    }
   });
 }
 

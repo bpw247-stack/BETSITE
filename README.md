@@ -13,6 +13,13 @@ A personal website for tracking your sports bets: picks, money placed, wins and 
 - **Matchups**: upcoming NFL or NBA games (today, or the next 3, 7 or 14 days) with kickoff/tip time, TV, records, the betting line and over/under, and live scores. Each game lists its notable injuries. For the NFL that's every QB plus RB/WR/TE not on a season-long list, and for the NBA it's anyone out, doubtful, questionable or day-to-day; a toggle shows all injuries. NFL weeks also get a **QB watch** table. Games you have pending bets or parlay legs on are highlighted, and each game has buttons to log a bet on either team with the matchup pre-filled.
 - **Previous matchups** (on every Matchups game card): the last 5 meetings between the two teams over recent seasons, playoffs included. You get the series record, average total points compared with this game's over/under, and average margin. Each game is tagged with storylines: 💥 blowouts, ⏱️ close games, ⚡ offensive dominance (35+ pts or 450+ yds in the NFL; 130+ pts or 55%+ FG in the NBA) and 🛡️ defensive dominance (allowed 10 or fewer pts, or forced 3+ turnovers; 95 or fewer pts in the NBA). 🔥 marks big individual games: 300+ passing yards or 3+ TD passes, 100+ rushing or receiving yards, or 2+ TDs; 30+ points, 15+ rebounds or 10+ assists in the NBA.
 - **Niche Stats** (📊 button on every Matchups game): side-by-side situational records for both teams over the last four NFL seasons (two in the NBA). For the NFL that's overall, home/away, primetime (7 PM ET or later), Monday, Thursday and Sunday night, division games, after a loss or win, playoffs and the last 10. The NBA gets national-TV games and the second night of back-to-backs instead of the night-game rows. It also shows the record against the spread (overall, as favorite or underdog, home/away, primetime, last 10) and the over/under record, worked out from ESPN's closing lines. Rows that apply to this game are highlighted, for example Monday Night for an MNF game or underdog for the team getting points. Head coaches come from ESPN. You can add coordinators and assistants with their previous teams, and the site flags anyone who used to work for the opponent and any former team the two staffs share.
+- **Auto-settle**: pending bets and parlay legs are graded from ESPN final scores and box scores. That covers moneylines, spreads, totals, team totals and player props (yards, receptions, TDs, points, rebounds, assists, combos like PRA and Rush + Rec, threes, double-doubles and more). The site checks when it opens and every 30 minutes, then shows a banner. You approve the results before anything changes. Props for players who didn't play are flagged for you to settle, since many books void them.
+- **Player prop research**: 🔍 in the bet form, on player-prop parlay legs and on prop bet pages. It shows the player's last 10 games for that stat against your line, with hit rate, average, median, high/low, games against this opponent and a bar chart.
+- **Insights**: your strengths and weaknesses in plain English ("You're 12-3 on NBA unders"). It breaks your record down by what you bet, prop category and side, day of week, sportsbook, favorites vs underdogs, odds range, bet size and straight vs parlay, and shows which legs sink your parlays.
+- **Suggested bet sizes**: set a bankroll and unit size in Settings. The bet form then offers 0.5/1/2/3-unit buttons, an optional quarter-Kelly size from your own win estimate, and a warning when a bet is above your limit.
+- **Game weather** (NFL): forecast at kickoff for outdoor stadiums (temperature, wind, gusts, chance of rain or snow) from Open-Meteo, with flags for wind, rain, snow, freezing and heat. Domes show as indoors, retractable roofs are noted, and neutral-site games are skipped.
+- **Bet slip import**: paste the confirmation text from your sportsbook. The site reads the book, stake, odds, date and selections, including parlay legs, alternate lines and yes/no props, and pre-fills the bet form for you to check.
+- **Phone access**: the computer running BetSite never needs a password. Other devices are blocked until you set one in **Settings → Phone access**, then sign in once; the login lasts 90 days and is limited to 10 tries per 15 minutes. Settings shows the address to open on your phone on the same Wi-Fi. For access away from home, Tailscale works without opening your network to the internet.
 - **Injury reports**: live NFL and NBA injury lists from ESPN's public feed, cached for 15 minutes. You can filter by team, status or player, or show only teams you've bet on. Teams with pending bets are highlighted, and injuries also appear on each bet and team page.
 - **Notes**:
   - A **general notes** page with titles, tags, pinning and search.
@@ -42,7 +49,7 @@ Optional environment variables:
 | `HOST`      | `0.0.0.0`       | Interface to bind               |
 | `DATA_FILE` | `data/db.json`  | Where your bets and notes are saved |
 
-Your data lives in `data/db.json`, which git ignores. Back it up from the **Backup** page.
+Your data lives in `data/` (bets and notes in `db.json`, plus caches, backups and the phone-access password hash), which git ignores. Back it up from the **Backup** page.
 
 > **Note:** the site has no login. Run it on your own computer, or put it behind authentication before you expose it on the internet.
 
@@ -63,10 +70,14 @@ lib/h2h.js         Past meetings, box-score leaders and notable-performance rule
 lib/updater.js     Checks GitHub for new versions and installs them (never touches data/)
 lib/unzip.js       Tiny dependency-free ZIP reader used by the updater
 lib/niche.js       Situational splits, primetime slots (US Eastern), ATS / O-U from closing lines
+lib/grading.js     Box-score parsing, prop stat mapping, bet grading, prop research summary
+lib/weather.js     NFL stadium locations/roofs and Open-Meteo forecast summary
+lib/auth.js        Password + sessions for access from other devices
 public/            Frontend (vanilla JS, no build step)
   index.html
   app.js           Views: dashboard, bets, props, teams, injuries, notes, backup
-  stats.js         Odds math and aggregations (shared with tests)
+  stats.js         Odds math, aggregations, bankroll/Kelly sizing, insights (shared with tests)
+  slip.js          Bet slip text parser (shared with tests)
   teams.js         NFL/NBA team lists and prop categories
   styles.css       Light/dark theme
 test/              node:test suites
@@ -76,12 +87,16 @@ test/              node:test suites
 
 | Method | Path | |
 |---|---|---|
-| GET/POST | `/api/bets`, `/api/notes`, `/api/teamNotes`, `/api/coaches` | list / create |
+| GET/POST | `/api/bets`, `/api/notes`, `/api/teamNotes`, `/api/coaches`, `/api/settings` | list / create |
 | GET/PUT/DELETE | `/api/{collection}/{id}` | read / update / delete |
 | GET | `/api/injuries/nfl`, `/api/injuries/nba` | injury report (`?refresh` skips the cache) |
 | GET | `/api/schedule/nfl`, `/api/schedule/nba` | upcoming games (`?days=1-21`, `?refresh`) |
 | GET | `/api/h2h/{nfl,nba}?a=KC&b=BUF` | previous meetings with leaders and storylines (`?n=1-10`) |
 | GET | `/api/niche/{nfl,nba}?a=BUF&b=KC` | situational, ATS and O/U records for both teams (`?refresh`) |
+| POST | `/api/autosettle` | grade pending picks from final results (nothing is saved) |
+| GET | `/api/propresearch/{nfl,nba}?team=&player=&prop=&line=&side=&opp=` | player's recent games for a prop |
+| GET | `/api/weather?home=GB&date=ISO` | NFL game-time forecast |
+| GET/POST | `/api/auth/status`, `/api/auth/password`, `/api/auth/disable`, `/api/auth/logout` | phone access (changes only from this computer) |
 | GET | `/api/version` | installed version |
 | GET | `/api/update/check` | newest version on GitHub and what changed (`?refresh`) |
 | POST | `/api/update/apply` | install a version (`{ "sha": "…" }`); restarts when run via `npm start` |

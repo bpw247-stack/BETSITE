@@ -365,3 +365,8 @@ dialog.wide { width: min(980px, calc(100vw - 32px)); }
 /* ---------- bet slip import ---------- */
 .slip-preview { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-top: 10px; }
 .slip-legs { margin: 4px 0 0; padding-left: 18px; }
+
+/* ---------- phone access ---------- */
+.phone-steps { padding-left: 20px; margin: 8px 0; }
+.phone-steps li { margin-bottom: 6px; }
+.phone-url { background: var(--surface-2); padding: 2px 6px; border-radius: 6px; font-size: .95em; user-select: all; }

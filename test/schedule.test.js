@@ -45,3 +45,9 @@ test('tolerates garbage input and formats ESPN days', () => {
   assert.deepStrictEqual(parseEspnScoreboard(null), []);
   assert.strictEqual(espnDay(new Date('2026-10-13T03:00:00Z')), '20261012');
 });
+
+test('scoreboard parse includes neutral site and indoor flags', () => {
+  const [g] = parseEspnScoreboard({ events: [{ id: '5', date: '2026-10-25T13:30Z', competitions: [{ neutralSite: true, venue: { fullName: 'Wembley', indoor: false }, competitors: [{ homeAway: 'home', team: { abbreviation: 'JAX' } }, { homeAway: 'away', team: { abbreviation: 'PHI' } }] }] }] });
+  assert.strictEqual(g.neutralSite, true);
+  assert.strictEqual(g.indoor, false);
+});

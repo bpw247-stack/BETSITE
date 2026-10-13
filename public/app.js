@@ -17,6 +17,7 @@
     h2h: {}, // `${league}:${a}:${b}` -> { loading, data, error }
     h2hOpen: new Set(), // keys of expanded "previous matchups" panels
     niche: {}, // `${league}:${a}:${b}` -> { loading, data, error }
+    weather: {}, // `${home}|${kickoff}|${neutral}|${indoor}` -> forecast
     coaches: [], // coaching staffs you've entered, keyed "SPORT-ABBR"
     sort: { key: 'date', dir: -1 },
   };
@@ -1112,6 +1113,18 @@
     return summary + rows;
   }
 
+  const WEATHER_ICONS = { wind: '🌬️', rain: '🌧️', snow: '❄️', cold: '🥶', heat: '🥵' };
+  function weatherHtml(w) {
+    if (!w || w.loading) return '<span class="muted small">Loading weather…</span>';
+    if (w.error) return `<span class="muted small">Weather unavailable</span>`;
+    if (w.roof === 'dome') return `<span class="small">🏟️ Indoors${w.stadium ? ` <span class="muted">(${esc(w.stadium)})</span>` : ''}: weather won't matter</span>`;
+    if (w.roof === 'neutral' || w.roof === 'unknown') return `<span class="muted small">${esc(w.note || '')}</span>`;
+    if (w.status === 'too-far') return `<span class="muted small">🌤️ ${esc(w.note)}</span>`;
+    if (w.status === 'past' || w.status === 'unavailable' || w.temp == null) return '';
+    const flags = (w.flags || []).map((f) => `<span class="wx-flag ${esc(f.type)}">${WEATHER_ICONS[f.type] || ''} ${esc(f.text)}</span>`).join('');
+    return `<div class="small">🌡️ <strong>${w.temp}°F</strong>${w.condition ? ` · ${esc(w.condition)}` : ''} · wind <strong>${w.wind ?? '—'} mph</strong>${w.gust ? ` (gusts ${w.gust})` : ''}${w.precipChance != null ? ` · ${w.precipChance}% chance of rain/snow` : ""}${w.roof === 'retractable' ? ' <span class="muted">(retractable roof, may be closed)</span>' : ''}</div>${flags ? `<div class="wx-flags">${flags}</div>` : ''}`;
+  }
+
   const NFL_KEY_POS = ['QB', 'RB', 'WR', 'TE'];
   const isLongTerm = (status) => /injured reserve|^ir$|pup|physically unable|suspen|non-football/i.test(String(status));
   const severity = (status) => ({ out: 0, doubtful: 1, questionable: 2 }[statusClass(status)] ?? 3);
@@ -1220,6 +1233,7 @@
           ${teamRow(g.h, g.home, '<span class="muted">@ </span>')}
           ${g.spread || g.overUnder != null ? `<div class="game-lines">${g.spread ? `Line: <strong>${esc(g.spread)}</strong>` : ''}${g.spread && g.overUnder != null ? ' · ' : ''}${g.overUnder != null ? `O/U <strong>${esc(g.overUnder)}</strong>` : ''}</div>` : ''}
           ${g.venue ? `<div class="muted small">${esc(g.venue)}</div>` : ''}
+          ${sport === 'NFL' && g.state === 'pre' ? `<div class="game-weather" data-weather="${esc(`${g.h}|${g.date}|${g.neutralSite ? 1 : 0}|${g.indoor ? 1 : 0}`)}">${weatherHtml(state.weather[`${g.h}|${g.date}|${g.neutralSite ? 1 : 0}|${g.indoor ? 1 : 0}`])}</div>` : ''}
           <div class="game-inj">${injBlock(g.a, g.away)}${injBlock(g.h, g.home)}</div>
           <details class="h2h" data-h2h="${esc(`${league}:${g.a}:${g.h}`)}" data-a="${esc(g.a)}" data-b="${esc(g.h)}" data-ou="${g.overUnder ?? ''}"${state.h2hOpen.has(`${league}:${g.a}:${g.h}`) ? ' open' : ''}>
             <summary>📜 Previous matchups</summary>
@@ -1294,6 +1308,16 @@
         });
       })
     );
+    app.querySelectorAll('[data-weather]').forEach((el) => {
+      const key = el.dataset.weather;
+      if (state.weather[key]) return;
+      const [home, date, neutral, indoor] = key.split('|');
+      state.weather[key] = { loading: true };
+      api('GET', `/api/weather?${new URLSearchParams({ home, date, neutral, indoor })}`)
+        .then((w) => (state.weather[key] = w))
+        .catch((err) => (state.weather[key] = { error: err.message }))
+        .then(() => app.querySelectorAll(`[data-weather="${CSS.escape(key)}"]`).forEach((x) => (x.innerHTML = weatherHtml(state.weather[key]))));
+    });
     app.querySelectorAll('[data-niche]').forEach((btn) =>
       btn.addEventListener('click', () => {
         const g = (sched && sched.data ? sched.data.games : []).find((x) => x.id === btn.dataset.niche);

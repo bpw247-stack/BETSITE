@@ -355,3 +355,9 @@ dialog.wide { width: min(980px, calc(100vw - 32px)); }
 .pr-line { right: 0; }
 .pr-line span { right: 0; top: -9px; }
 .pr-bar span { z-index: 2; }
+
+/* ---------- weather ---------- */
+.game-weather { font-size: .85rem; }
+.wx-flags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.wx-flag { font-size: .74rem; padding: 1px 7px; border-radius: 999px; background: var(--warn-bg); color: var(--warn); }
+.wx-flag.wind, .wx-flag.snow { background: var(--bad-bg); color: var(--bad); }

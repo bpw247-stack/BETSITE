@@ -15,6 +15,7 @@ const { seasonsToSearch, meetingsFromSchedule, parseGameSummary, summarizeH2H } 
 const { createUpdater } = require('./lib/updater');
 const niche = require('./lib/niche');
 const grading = require('./lib/grading');
+const weather = require('./lib/weather');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -462,6 +463,28 @@ async function propResearch(league, team, player, prop, line, side, opp) {
   return { player: name, team, prop, line: l, side: side || 'Over', games: out, summary, vsOpp };
 }
 
+// ---------- weather ----------
+
+const weatherCache = {}; // `${home}:${kickoff hour}` -> { at, data }
+async function getWeather(home, kickoff, { neutral, indoor } = {}) {
+  const stadium = weather.STADIUMS[home];
+  if (neutral) return { roof: 'neutral', note: 'Neutral-site game' };
+  if (!stadium) return { roof: 'unknown', note: 'Stadium not known' };
+  if (stadium.roof === 'dome' || indoor) return { roof: 'dome', stadium: stadium.name };
+  const k = Date.parse(kickoff);
+  if (!isFinite(k)) throw Object.assign(new Error('Bad kickoff time'), { status: 400 });
+  if (k - Date.now() > 15 * 86400000) return { roof: stadium.roof, stadium: stadium.name, status: 'too-far', note: 'Forecast available about 2 weeks out' };
+  if (k + 4 * 3600000 < Date.now()) return { roof: stadium.roof, stadium: stadium.name, status: 'past' };
+  const key = `${home}:${new Date(k).toISOString().slice(0, 13)}`;
+  const c = weatherCache[key];
+  if (c && Date.now() - c.at < 30 * 60 * 1000) return c.data;
+  const r = await fetch(weather.forecastUrl(stadium, kickoff), { headers: { 'User-Agent': 'BetSite/1.0' }, signal: AbortSignal.timeout(15000) });
+  if (!r.ok) throw new Error(`Weather service responded ${r.status}`);
+  const data = { roof: stadium.roof, stadium: stadium.name, ...(weather.summarizeForecast(await r.json(), kickoff) || { status: 'unavailable' }) };
+  weatherCache[key] = { at: Date.now(), data };
+  return data;
+}
+
 // ---------- API ----------
 
 async function handleApi(req, res, url) {
@@ -569,6 +592,15 @@ async function handleApi(req, res, url) {
     if (!q.get('prop')) return send(res, 400, { error: 'Enter the prop category first' });
     try {
       return send(res, 200, await propResearch(league, team, q.get('player'), q.get('prop'), q.get('line'), q.get('side'), String(q.get('opp') || '').toUpperCase()));
+    } catch (err) {
+      return send(res, err.status || 502, { error: err.message });
+    }
+  }
+
+  if (resource === 'weather') {
+    const q = url.searchParams;
+    try {
+      return send(res, 200, await getWeather(String(q.get('home') || '').toUpperCase(), q.get('date'), { neutral: q.get('neutral') === '1', indoor: q.get('indoor') === '1' }));
     } catch (err) {
       return send(res, err.status || 502, { error: err.message });
     }

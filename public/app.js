@@ -1637,6 +1637,7 @@
   }
 
   const SPLIT_LINKS = [
+    ['SportsBettingDime', 'https://www.sportsbettingdime.com/{league}/public-betting-trends/'],
     ['VSIN (DraftKings splits)', 'https://data.vsin.com/betting-splits/'],
     ['Action Network public betting', 'https://www.actionnetwork.com/{league}/public-betting'],
     ['Covers consensus', 'https://contests.covers.com/consensus/topconsensus/{league}/overall'],
@@ -1671,6 +1672,53 @@
       toast('Splits saved');
       render();
     });
+  }
+
+  function openPasteSplits(games, league) {
+    const sport = league.toUpperCase();
+    modalForm.innerHTML = `
+      <h2>📋 Paste betting splits</h2>
+      <p class="muted small" style="margin-top:0">Open a page with public betting percentages, select the part with the games (Command + A copies the whole page; that's fine), copy, and paste it here. The site picks out bet % and money % for each of this week's games.
+        Sources: ${SPLIT_LINKS.map(([n, u]) => `<a href="${u.replace('{league}', league)}" target="_blank" rel="noopener">${esc(n)}</a>`).join(' · ')}</p>
+      <textarea name="text" rows="9" placeholder="e.g.\nPublic betting: 64% of bets are on the Bills, but 58% of the money is on Kansas City.\nThe over is getting 71% of tickets and 66% of the handle."></textarea>
+      <div id="splitPreview"></div>
+      <div class="modal-actions"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn" data-read>Read</button><button type="button" class="btn primary" data-save disabled>Save</button></div>`;
+    modalForm.onsubmit = (e) => e.preventDefault();
+    wireModalClose();
+    modal.showModal();
+    let found = {};
+    const preview = modalForm.querySelector('#splitPreview');
+    const save = modalForm.querySelector('[data-save]');
+    const cell = (v) => (v == null ? '<span class="muted">—</span>' : `${v}%`);
+    const read = () => {
+      found = window.BetSplits.parseSplits(modalForm.text.value, games, window.LEAGUES, sport);
+      const ids = Object.keys(found);
+      preview.innerHTML = ids.length
+        ? `<div class="table-wrap" style="margin-top:10px"><table><thead><tr><th></th><th>Game</th><th class="num">Spread bets (home)</th><th class="num">Spread money (home)</th><th class="num">Over bets</th><th class="num">Over money</th></tr></thead><tbody>
+          ${ids.map((id) => { const r = found[id]; return `<tr><td><input type="checkbox" data-id="${esc(id)}" checked style="width:auto"></td><td>${esc(r.matchup)}</td><td class="num">${cell(r.homeBets)}</td><td class="num">${cell(r.homeMoney)}</td><td class="num">${cell(r.overBets)}</td><td class="num">${cell(r.overMoney)}</td></tr>`; }).join('')}
+          </tbody></table></div><div class="muted small" style="margin-top:6px">Found splits for ${plural(ids.length, 'game')} of ${games.length}. Percentages are shown for the home team and the over. Untick anything that looks wrong. Saving only fills in the numbers found, and keeps anything you entered before.</div>`
+        : '<div class="alert small" style="margin-top:10px">No splits found for this week\'s games. Make sure the text includes team names and percentages labeled as bets/tickets or money/handle. If it still doesn\'t work, send the text to Claude so the reader can be adjusted.</div>';
+      save.disabled = !ids.length;
+    };
+    modalForm.querySelector('[data-read]').addEventListener('click', read);
+    modalForm.text.addEventListener('paste', () => setTimeout(read, 0));
+    save.addEventListener('click', async () => {
+      const chosen = [...modalForm.querySelectorAll('#splitPreview input[data-id]:checked')].map((c) => c.dataset.id);
+      try {
+        for (const id of chosen) {
+          const g = games.find((x) => x.id === id);
+          const merged = { ...(g.splits || {}) };
+          for (const [k, v] of Object.entries(found[id])) if (v != null && k !== 'matchup') merged[k] = v;
+          g.splits = await api('PUT', '/api/splits/' + encodeURIComponent(id), { ...merged, matchup: found[id].matchup, gameDate: g.date, source: 'pasted' });
+        }
+        modal.close();
+        toast(`Saved splits for ${plural(chosen.length, 'game')}`);
+        render();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+    modalForm.text.focus();
   }
 
   function oddsKeyNote() {
@@ -1842,6 +1890,7 @@
           ? `<div class="muted small" style="margin-bottom:10px">Consensus from The Odds API${o.fetchedAt ? ` · updated ${fmtDateTime(o.fetchedAt)}` : ''}${o.remaining != null ? ` · ${o.remaining} requests left this month` : ''} · <button class="btn sm" id="refreshOdds">↻ Refresh odds (uses 3)</button>${o.error ? ` <span class="neg">${esc(o.error)}</span>` : ''}</div>`
           : oddsKeyNote()
       }
+        <div class="btn-row" style="margin-bottom:10px"><button class="btn" id="pasteSplits">📋 Paste splits for all games</button><span class="muted small">bet % and money % from SportsBettingDime, VSIN, Action Network…</span></div>
         <div class="muted small" style="margin-bottom:10px">"Open" is the opening line from ESPN when it provides one; otherwise it's the line the first time this site saw the game. Spreads are shown from the home team's side.</div>
         ${games.length ? games.map((g) => marketGameHtml(g, league)).join('') : `<div class="card empty">No upcoming ${sport} games in the next ${plural(days, 'day')}.</div>`}`;
     }
@@ -1863,6 +1912,8 @@
         await loadMarket(league, days, true);
         render();
       });
+    const pss = app.querySelector('#pasteSplits');
+    if (pss) pss.addEventListener('click', () => openPasteSplits(games, league));
     app.querySelectorAll('[data-edit-splits]').forEach((b) =>
       b.addEventListener('click', () => openSplitsForm(b.closest('.mk-game'), games.find((g) => g.id === b.dataset.editSplits), league))
     );

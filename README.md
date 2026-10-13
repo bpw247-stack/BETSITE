@@ -21,7 +21,7 @@ A personal website for tracking your sports bets: picks, money placed, wins and 
 - **Bet slip import**: paste the confirmation text from your sportsbook. The site reads the book, stake, odds, date and selections, including parlay legs, alternate lines and yes/no props, and pre-fills the bet form for you to check.
 - **Phone access**: the computer running BetSite never needs a password. Other devices are blocked until you set one in **Settings → Phone access**, then sign in once; the login lasts 90 days and is limited to 10 tries per 15 minutes. Settings shows the address to open on your phone on the same Wi-Fi. For access away from home, Tailscale works without opening your network to the internet.
 - **Market** tab:
-  - **Lines & splits**: every upcoming game with the opening line (from ESPN when available, otherwise the first line this site saw), the current line and how it has moved. With a free The Odds API key you also get the consensus across sportsbooks and the best available price per side. Enter public bet % and money % (copied from VSIN, Action Network or Covers) and the site flags bigger bets against the public, the public side and reverse line movement.
+  - **Lines & splits**: every upcoming game with the opening line (from ESPN when available, otherwise the first line this site saw), the current line and how it has moved. With a free The Odds API key you also get the consensus across sportsbooks and the best available price per side. Enter public bet % and money % per game, or use **📋 Paste splits for all games**: paste a page or article (SportsBettingDime, VSIN, Action Network…) and the site reads every game's percentages from sentences or tables, for you to review before saving. Pasted or typed in, and the site flags bigger bets against the public, the public side and reverse line movement.
   - **Props**: with an Odds API key, consensus prop lines, best over/under prices and books, and how each line has moved since this site first saw it. Each prop has 🔍 research (last 10 games vs the line) and a + Bet button. Loading props for a game uses about 6 of the 500 free monthly requests and is cached for 6 hours.
   - **Streaks**: team ATS and over/under streaks, situational spots that apply this week (Sunday night, road underdog…) and player milestone streaks (e.g. "75+ rushing yards in 4 straight"). If prop lines are loaded, it also shows player streaks against those lines. Built in the background from ESPN box scores and cached for 3 hours.
 - **Injury reports**: live NFL and NBA injury lists from ESPN's public feed, cached for 15 minutes. You can filter by team, status or player, or show only teams you've bet on. Teams with pending bets are highlighted, and injuries also appear on each bet and team page.
@@ -84,6 +84,7 @@ public/            Frontend (vanilla JS, no build step)
   app.js           Views: dashboard, bets, props, teams, injuries, notes, backup
   stats.js         Odds math, aggregations, bankroll/Kelly sizing, insights (shared with tests)
   slip.js          Bet slip text parser (shared with tests)
+  splits.js        Betting-splits text parser for pasted articles/tables (shared with tests)
   teams.js         NFL/NBA team lists and prop categories
   styles.css       Light/dark theme
 test/              node:test suites

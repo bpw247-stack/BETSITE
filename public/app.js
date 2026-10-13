@@ -21,6 +21,7 @@
     market: {}, // `${league}:${days}` -> { loading, data, error }
     props: {}, // `${league}:${gameId}` -> { loading, data, error }
     trends: {}, // `${league}:${days}` -> last /api/trends response
+    rankings: null, // last /api/rankings/nfl response
     coaches: [], // coaching staffs you've entered, keyed "SPORT-ABBR"
     sort: { key: 'date', dir: -1 },
   };
@@ -215,6 +216,7 @@
     injuries: renderInjuries,
     matchups: renderMatchups,
     market: renderMarket,
+    rankings: renderRankings,
     notes: renderNotes,
     settings: renderSettings,
   };
@@ -2007,6 +2009,211 @@
   }
 
   // ---------- notes ----------
+
+  // ---------- rankings ----------
+
+  const ordinal = (n) => {
+    if (n == null) return '—';
+    const v = n % 100;
+    return n + (v >= 11 && v <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][v % 10] || 'th');
+  };
+  const RK_SIDES = {
+    def: { title: 'Defense', overall: 'def.yards', cols: ['def.yards', 'def.points', 'def.pass', 'def.rush', 'def.ypc', 'def.sacks', 'def.ints', 'def.fumbles', 'def.takeaways', 'def.passTd', 'def.rushTd', 'def.third'] },
+    off: { title: 'Offense', overall: 'off.yards', cols: ['off.yards', 'off.points', 'off.pass', 'off.rush', 'off.passTd', 'off.rushTd', 'off.turnovers', 'off.ypc', 'off.sackRate', 'off.oline', 'off.third'] },
+  };
+  const RK_CHIP = {
+    'def.yards': 'Overall', 'def.points': 'Points allowed', 'def.pass': 'vs pass', 'def.rush': 'vs run', 'def.ypc': 'YPC allowed', 'def.sacks': 'Sacks',
+    'def.ints': 'Interceptions', 'def.fumbles': 'Fumbles recovered', 'def.takeaways': 'Takeaways', 'def.passTd': 'Pass TDs allowed', 'def.rushTd': 'Rush TDs allowed', 'def.third': '3rd down',
+    'off.yards': 'Overall', 'off.points': 'Points', 'off.pass': 'Passing', 'off.rush': 'Rushing', 'off.passTd': 'Passing TDs', 'off.rushTd': 'Rushing TDs',
+    'off.turnovers': 'Turnovers', 'off.ypc': 'Yards per carry', 'off.sackRate': 'Sacks allowed', 'off.oline': 'O-line', 'off.third': '3rd down',
+  };
+
+  let rankingsPoll = null;
+  async function pollRankings(refresh) {
+    clearTimeout(rankingsPoll);
+    rankingsPoll = true;
+    try {
+      state.rankings = await api('GET', `/api/rankings/nfl${refresh ? '?refresh=1' : ''}`);
+    } catch (err) {
+      state.rankings = { status: 'error', error: err.message };
+    }
+    const here = parseHash().parts[0] === 'rankings';
+    if (here) quietRender();
+    rankingsPoll = state.rankings.status === 'building' && here ? setTimeout(() => pollRankings(), 2500) : null;
+  }
+
+  function rkValue(m, row) {
+    const v = row.values[m.key];
+    if (m.key === 'off.oline') return v == null ? '—' : `${row.ranks['off.sackRate'] || '—'} · ${row.ranks['off.ypc'] || '—'}`;
+    if (v == null) return '—';
+    if (m.fmt === 'pct') return (v * 100).toFixed(1) + '%';
+    if (m.fmt === 'count') return String(row.totals[m.key] ?? '—');
+    return v.toFixed(1);
+  }
+
+  function renderRankings(_, params) {
+    const view = ['standings', 'def', 'off', 'outliers'].includes(params.get('view')) ? params.get('view') : 'standings';
+    const r = state.rankings;
+    if (!r && rankingsPoll == null) pollRankings();
+    const d = r && r.data;
+    const tabs = [['standings', 'Standings'], ['def', 'Defense'], ['off', 'Offense'], ['outliers', `Outliers${d ? ` (${d.outliers.length})` : ''}`]];
+    const head = `<div class="page-head"><div><h1>Rankings</h1><div class="muted">${
+      d ? `NFL ${d.season} regular season · ${plural(d.games, 'game')} played${d.currentSeason ? '' : ' · the new season hasn’t started, so this is last season'}` : 'NFL standings, team rankings and games that skew the averages.'
+    }</div></div>
+      <button class="btn" id="rkRefresh" ${r && r.status === 'building' ? 'disabled' : ''}>↻ Refresh</button></div>
+      <div class="tabs subtabs" id="rkTabs">${tabs.map(([v, l]) => `<button data-v="${v}" class="${v === view ? 'active' : ''}">${l}</button>`).join('')}</div>`;
+
+    let body;
+    if (!r || (r.status === 'building' && !d)) {
+      const p = r && r.progress;
+      body = `<div class="card empty section"><h3>Adding up this season's games…</h3>${
+        p && p.total ? `<div class="progress"><div style="width:${Math.round((p.done / p.total) * 100)}%"></div></div><div class="muted small">${p.done} of ${p.total} box scores · the first time takes a minute; after that only new games are fetched</div>` : '<div class="muted small">Finding this season’s games…</div>'
+      }</div>`;
+    } else if (!d) {
+      body = `<div class="alert error section">Couldn't build the rankings: ${esc(r.error || 'unknown error')}. Try Refresh in a minute.</div>`;
+    } else {
+      const pendingTeams = new Set(S.picks(state.bets).filter((x) => (x.result || 'pending') === 'pending' && x.sport === 'NFL').flatMap((x) => [x.team, x.opponent]).filter(Boolean));
+      const flagged = {};
+      for (const o of d.outliers) (flagged[`${o.side}:${o.team}`] = flagged[`${o.side}:${o.team}`] || []).push(o);
+      const ctx = { d, params, pendingTeams, flagged };
+      body =
+        (r.status === 'building' ? '<div class="alert small section">Updating in the background…</div>' : '') +
+        (view === 'standings' ? standingsHtml(ctx) : view === 'outliers' ? outliersHtml(ctx) : rankTableHtml(view, ctx)) +
+        `<p class="muted small" style="margin-top:16px">Source: ESPN box scores · updated ${fmtDateTime(d.builtAt)}${d.missing ? ` · ${plural(d.missing, 'game')} couldn't be loaded` : ''}</p>`;
+    }
+    app.innerHTML = head + body;
+
+    app.querySelectorAll('#rkTabs button').forEach((b) =>
+      b.addEventListener('click', () => {
+        const p = new URLSearchParams();
+        p.set('view', b.dataset.v);
+        location.hash = '#/rankings?' + p;
+      })
+    );
+    app.querySelector('#rkRefresh').addEventListener('click', () => pollRankings(true));
+    const sorted = app.querySelector('.rk-table th.rk-sorted');
+    if (sorted) {
+      const wrap = sorted.closest('.table-wrap');
+      const sticky = [...wrap.querySelectorAll('thead th')].slice(0, 2).reduce((w, th) => w + th.offsetWidth, 0);
+      if (sorted.offsetLeft + sorted.offsetWidth > wrap.clientWidth) wrap.scrollLeft = sorted.offsetLeft - sticky - 8;
+    }
+    app.querySelectorAll('[data-rk-sort]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const p = new URLSearchParams(params);
+        p.set('sort', b.dataset.rkSort);
+        history.replaceState(null, '', '#/rankings?' + p);
+        render();
+      })
+    );
+    app.querySelectorAll('[data-rk-filter]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const p = new URLSearchParams(params);
+        b.dataset.rkFilter ? p.set('side', b.dataset.rkFilter) : p.delete('side');
+        p.delete('team');
+        history.replaceState(null, '', '#/rankings?' + p);
+        render();
+      })
+    );
+    wireCommon();
+  }
+
+  const nflName = (abbr) => teamName('NFL', abbr);
+  const teamCell = (abbr, ctx, extra = '') =>
+    `<a href="#/team/NFL/${encodeURIComponent(abbr)}" class="rk-team${ctx.pendingTeams.has(abbr) ? ' has-bet' : ''}" title="${ctx.pendingTeams.has(abbr) ? 'You have a pending bet on this team' : ''}">${esc(nflName(abbr))}</a>${extra}`;
+
+  function standingsHtml(ctx) {
+    const order = [0, 4, 1, 5, 2, 6, 3, 7]; // AFC and NFC divisions side by side
+    const card = (div) => `<div class="card rk-div"><h2>${esc(div.name)}</h2><div class="table-wrap"><table class="rk-standings">
+      <thead><tr><th>Team</th><th class="num">W-L${div.teams.some((t) => t.t) ? '-T' : ''}</th><th class="num">Pct</th><th class="num hide-sm">Div</th><th class="num hide-sm rk-pfpa">PF</th><th class="num hide-sm rk-pfpa">PA</th><th class="num">Diff</th><th class="num">Strk</th><th class="hide-sm">Last 5</th></tr></thead>
+      <tbody>${div.teams
+        .map(
+          (t) => `<tr><td>${teamCell(t.abbr, ctx)}</td><td class="num">${t.w}-${t.l}${t.t ? `-${t.t}` : ''}</td><td class="num">${t.pct.toFixed(3).replace(/^0/, '')}</td>
+            <td class="num hide-sm">${esc(t.div)}</td><td class="num hide-sm rk-pfpa">${t.pf}</td><td class="num hide-sm rk-pfpa">${t.pa}</td>
+            <td class="num ${t.diff > 0 ? 'pos' : t.diff < 0 ? 'neg' : ''}">${t.diff > 0 ? '+' : ''}${t.diff}</td><td class="num">${esc(t.streak || '—')}</td>
+            <td class="hide-sm"><span class="rk-form">${[...t.last5].map((x) => `<span class="rk-res ${x.toLowerCase()}" title="${x === 'W' ? 'Win' : x === 'L' ? 'Loss' : 'Tie'}">${x}</span>`).join('')}</span></td></tr>`
+        )
+        .join('')}</tbody></table></div></div>`;
+    return `<div class="grid cols-2 section rk-divs">${order.map((i) => card(ctx.d.standings[i])).join('')}</div>
+      <p class="muted small" style="margin-top:12px">Ordered by win %, then division record, conference record and point differential. The NFL's full tiebreakers (head-to-head, common games, strength of victory) aren't applied.</p>`;
+  }
+
+  function rankTableHtml(side, ctx) {
+    const { d, params } = ctx;
+    const conf = RK_SIDES[side];
+    const metrics = Object.fromEntries(d.metrics.map((m) => [m.key, m]));
+    const sortKey = conf.cols.includes(params.get('sort')) ? params.get('sort') : conf.overall;
+    const rows = d.teams.slice().sort((a, b) => (a.ranks[sortKey] ?? 99) - (b.ranks[sortKey] ?? 99) || a.abbr.localeCompare(b.abbr));
+    const n = d.teams.length;
+    const tone = (rank) => (rank == null ? '' : rank <= 8 ? 'rk-top' : rank > n - 8 ? 'rk-bottom' : '');
+    const sm = metrics[sortKey];
+    const note =
+      sortKey === 'off.oline'
+        ? 'O-line ranks blend pass protection (sack rate allowed) and run blocking (yards per carry). The column shows those two ranks.'
+        : sm.total
+        ? `${esc(sm.label)} are ranked per game, so a bye week doesn't count against a team. The column shows the season total.`
+        : '';
+    const chips = conf.cols.map((k) => `<button class="chip-btn ${k === sortKey ? 'active' : ''}" data-rk-sort="${k}">${esc(RK_CHIP[k])}</button>`).join('');
+    const flagChip = (abbr) => {
+      const f = ctx.flagged[`${side}:${abbr}`];
+      return f ? ` <a class="rk-flag" href="#/rankings?view=outliers&team=${encodeURIComponent(abbr)}" title="${esc(f.length === 1 ? 'One game skews this average' : `${f.length} games skew these averages`)}">outlier</a>` : '';
+    };
+    return `<div class="rk-chips section" role="group" aria-label="Rank by">${chips}</div>
+      <div class="card rk-card"><div class="table-wrap"><table class="rk-table">
+        <thead><tr><th class="num">#</th><th>Team</th><th class="num">G</th>${conf.cols
+          .map((k) => `<th class="num${k === sortKey ? ' rk-sorted' : ''}"><button class="rk-th" data-rk-sort="${k}" title="${esc(metrics[k].label)}">${esc(metrics[k].short)}</button></th>`)
+          .join('')}</tr></thead>
+        <tbody>${rows
+          .map(
+            (row) => `<tr><td class="num rk-pos">${row.ranks[sortKey] ?? '—'}</td><td class="rk-name">${teamCell(row.abbr, ctx, flagChip(row.abbr))}</td><td class="num muted">${row.games}</td>${conf.cols
+              .map((k) => `<td class="num ${tone(row.ranks[k])}${k === sortKey ? ' rk-sorted' : ''}"><span class="rk-v">${rkValue(metrics[k], row)}</span><span class="rk-r">${row.ranks[k] ? ordinal(row.ranks[k]) : ''}</span></td>`)
+              .join('')}</tr>`
+          )
+          .join('')}</tbody></table></div></div>
+      <p class="muted small" style="margin-top:12px">${note ? note + ' ' : ''}Green marks a top-8 rank and red a bottom-8 rank. Defense numbers are what opponents gained against that team.</p>`;
+  }
+
+  function outlierSentence(o, d) {
+    const team = nflName(o.team);
+    const opp = nflName(o.opp);
+    const side = o.side === 'def' ? 'defense' : 'offense';
+    const verb = { 'points allowed': 'allowed', 'yards allowed': 'allowed', 'points scored': 'scored', 'yards gained': 'gained' }[o.what];
+    const unit = o.unit;
+    const range = o.value < o.others.min ? `at least ${o.others.min} in every other game` : `no more than ${o.others.max} in any other game`;
+    const oppKey = { 'def.points': 'off.points', 'def.yards': 'off.yards', 'off.points': 'def.points', 'off.yards': 'def.yards' }[o.metric];
+    const oppRow = d.teams.find((t) => t.abbr === o.opp);
+    const oppRank = oppRow && oppRow.ranks[oppKey];
+    const oppNote = oppRank
+      ? ` ${esc(opp)}${/s$/.test(opp) ? '’' : '’s'} ${o.side === 'def' ? 'offense' : 'defense'} ranks ${ordinal(oppRank)} in ${o.side === 'def' ? (o.unit === 'points' ? 'scoring' : 'yards') : o.unit === 'points' ? 'points allowed' : 'yards allowed'}.`
+      : '';
+    const fmtAvg = (v) => (unit === 'yards' ? v.toFixed(0) : v.toFixed(1));
+    return {
+      title: `${team} ${side}: ${o.value} ${unit} ${verb} ${o.home ? 'vs' : 'at'} ${o.opp}`,
+      body: `${esc(team)} ${verb} ${o.value} ${unit} ${o.home ? 'against' : 'at'} ${esc(opp)} on ${fmtDate(o.date)}, and ${range} (${plural(o.others.count, 'other game')}).${oppNote}`,
+      effect:
+        `Season average ${fmtAvg(o.avg)} per game, ${fmtAvg(o.avgWithout)} without that game. Rank ${ordinal(o.rankNow)} → ${ordinal(o.rankWithout)} in ${o.what}.` +
+        (o.also || []).map((a) => ` Same game, ${a.what}: ${a.value} (rank ${ordinal(a.rankNow)} → ${ordinal(a.rankWithout)}).`).join(''),
+    };
+  }
+
+  function outliersHtml(ctx) {
+    const { d, params } = ctx;
+    const side = ['def', 'off'].includes(params.get('side')) ? params.get('side') : '';
+    const team = params.get('team') || '';
+    const list = d.outliers.filter((o) => (!side || o.side === side) && (!team || o.team === team));
+    const chip = (v, l) => `<button class="chip-btn ${v === side && !team ? 'active' : ''}" data-rk-filter="${v}">${l}</button>`;
+    const item = (o) => {
+      const t = outlierSentence(o, d);
+      return `<li class="rk-out ${o.flatters ? 'flatters' : 'drags'}">
+        <div class="rk-out-tag">${o.flatters ? 'Average looks better than usual' : 'Average looks worse than usual'}</div>
+        <div class="rk-out-title">${esc(t.title)}</div>
+        <p>${t.body}</p>
+        <p class="rk-out-effect">${t.effect}</p>
+        <div class="btn-row"><a class="btn sm" href="#/team/NFL/${encodeURIComponent(o.team)}">${esc(nflName(o.team))} page</a></div></li>`;
+    };
+    return `<div class="rk-chips section">${chip('', 'All')}${chip('def', 'Defense')}${chip('off', 'Offense')}${team ? `<span class="chip">${esc(nflName(team))} <a href="#/rankings?view=outliers" aria-label="Show all teams" style="margin-left:6px">×</a></span>` : ''}</div>
+      <p class="muted" style="max-width:70ch">Games that sit far from a team's other results and move its season average. A defense that allowed 3 points once but 28+ every other week looks better on paper than it plays. Check who the opponent was, and whether starters, weather or a blowout explain it.</p>
+      ${list.length ? `<ul class="rk-outs">${list.map(item).join('')}</ul>` : `<div class="card empty">${d.games < 40 ? 'Not enough games yet. Outliers show up once teams have played 4 games.' : 'No games stand out right now.'}</div>`}`;
+  }
 
   function renderNotes(_, params) {
     const q = (params.get('q') || '').toLowerCase();

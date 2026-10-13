@@ -21,6 +21,7 @@ const trends = require('./lib/trends');
 const market = require('./lib/market');
 const slipReader = require('./lib/slipreader');
 const deps = require('./lib/deps');
+const rankings = require('./lib/rankings');
 const { createAuth, isLocalRequest, loginPage, blockedPage } = require('./lib/auth');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -727,6 +728,70 @@ function trendsStatus(league, days, force) {
   return { status: job.status, progress: job.progress, error: job.error, data: job.data || null };
 }
 
+// ---------- rankings (standings, team rankings, outliers) ----------
+
+const RANKINGS_TTL_MS = 60 * 60 * 1000;
+const rankingJobs = {}; // league -> { status, progress, data, at, error }
+
+// Team box-score lines for finished games, kept on disk (they never change).
+async function getTeamGame(league, eventId) {
+  const cache = boxCache(`${league}-teams`);
+  if (cache.map[eventId]) return cache.map[eventId];
+  const g = rankings.parseTeamGame(await espnJson(league, `summary?event=${encodeURIComponent(eventId)}`));
+  if (g) {
+    cache.map[eventId] = { ...g, id: g.id || eventId };
+    cache.save();
+  }
+  return g;
+}
+
+async function buildRankings(league, job) {
+  const current = niche.nicheSeasons(league).slice(-1)[0];
+  let season = current;
+  let ids = [];
+  for (const s of [current, current - 1]) {
+    season = s;
+    const seen = new Map();
+    await pool(rankings.TEAMS, 4, async (team) => {
+      try {
+        const payloads = await getTeamSeasonSchedule(league, team, s);
+        for (const g of payloads.flatMap((p) => niche.gamesFromSchedule(p, team))) if (!g.postseason) seen.set(g.id, g);
+      } catch (err) {
+        console.warn(`Rankings: schedule for ${team} failed: ${err.message}`);
+      }
+    });
+    ids = [...seen.keys()];
+    if (ids.length) break; // before week 1, show last season
+  }
+  job.progress = { done: 0, total: ids.length };
+  const games = [];
+  await pool(ids, 4, async (id) => {
+    try {
+      const g = await getTeamGame(league, id);
+      if (g) games.push(g);
+    } catch (err) {
+      console.warn(`Rankings: box score ${id} failed: ${err.message}`);
+    }
+    job.progress.done++;
+  });
+  if (!games.length) throw new Error('No finished games found yet');
+  return { league, season, currentSeason: season === current, builtAt: new Date().toISOString(), missing: ids.length - games.length, ...rankings.buildRankings(games) };
+}
+
+function rankingsStatus(league, force) {
+  const job = rankingJobs[league] || (rankingJobs[league] = { status: 'idle' });
+  const stale = !job.at || Date.now() - job.at > RANKINGS_TTL_MS;
+  if (job.status !== 'building' && (force || stale)) {
+    job.status = 'building';
+    job.error = null;
+    job.progress = { done: 0, total: 0 };
+    buildRankings(league, job)
+      .then((data) => Object.assign(job, { status: 'ready', data, at: Date.now() }))
+      .catch((err) => Object.assign(job, { status: job.data ? 'ready' : 'error', error: err.message }));
+  }
+  return { status: job.status, progress: job.progress, error: job.error, data: job.data || null };
+}
+
 // Prop lines fetched on the Market tab (none until the props feature is used).
 function cachedPropsFor(league) {
   return typeof marketProps === 'function' ? marketProps(league) : [];
@@ -905,6 +970,12 @@ async function handleApi(req, res, url) {
     } catch (err) {
       return send(res, err.status || 502, { error: err.message });
     }
+  }
+
+  if (resource === 'rankings') {
+    const league = (id || '').toLowerCase();
+    if (league !== 'nfl') return send(res, 404, { error: 'Rankings are available for the NFL' });
+    return send(res, 200, rankingsStatus(league, url.searchParams.has('refresh')));
   }
 
   if (resource === 'trends') {

@@ -18,6 +18,7 @@ const niche = require('./lib/niche');
 const grading = require('./lib/grading');
 const weather = require('./lib/weather');
 const trends = require('./lib/trends');
+const market = require('./lib/market');
 const { createAuth, isLocalRequest, loginPage, blockedPage } = require('./lib/auth');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -35,13 +36,13 @@ const auth = createAuth({ dataDir: path.dirname(DATA_FILE) });
 let updateCheckCache = null;
 const BOOT_ID = crypto.randomUUID(); // changes on every restart, so the page can tell the new server is up
 
-const COLLECTIONS = ['bets', 'notes', 'teamNotes', 'coaches', 'settings'];
+const COLLECTIONS = ['bets', 'notes', 'teamNotes', 'coaches', 'settings', 'splits'];
 const LEAGUE_PATHS = { nfl: 'football/nfl', nba: 'basketball/nba' };
 
 // ---------- storage ----------
 
 function emptyDb() {
-  return { bets: [], notes: [], teamNotes: [], coaches: [], settings: [] };
+  return { bets: [], notes: [], teamNotes: [], coaches: [], settings: [], splits: [] };
 }
 
 function loadDb() {
@@ -491,6 +492,141 @@ async function getWeather(home, kickoff, { neutral, indoor } = {}) {
   return data;
 }
 
+// ---------- market: lines, consensus, props ----------
+
+const ODDS_TTL_MS = 6 * 60 * 60 * 1000; // free Odds API plan = 500 requests/month, so cache hard
+const oddsState = { remaining: null, used: null, error: null };
+const gameOddsCache = {}; // league -> { at, events }
+const propsCache = {}; // league -> { [espnGameId]: { at, eventId, props } }
+
+function oddsApiKey() {
+  const s = (db.settings || []).find((x) => x.id === 'app');
+  return (s && s.oddsApiKey && String(s.oddsApiKey).trim()) || '';
+}
+
+async function oddsApi(pathAndQuery) {
+  const key = oddsApiKey();
+  if (!key) throw Object.assign(new Error('Add your free Odds API key in Settings'), { status: 400 });
+  const url = `https://api.the-odds-api.com/v4/${pathAndQuery}${pathAndQuery.includes('?') ? '&' : '?'}apiKey=${encodeURIComponent(key)}`;
+  const r = await fetch(url, { headers: { 'User-Agent': 'BetSite/1.0' }, signal: AbortSignal.timeout(20000) });
+  if (r.headers.get('x-requests-remaining') != null) {
+    oddsState.remaining = Number(r.headers.get('x-requests-remaining'));
+    oddsState.used = Number(r.headers.get('x-requests-used'));
+  }
+  if (r.status === 401) throw Object.assign(new Error('The Odds API rejected your key. Check it in Settings.'), { status: 400 });
+  if (r.status === 429 || r.status === 422) {
+    const body = await r.text();
+    throw new Error(/quota|usage/i.test(body) ? 'Out of Odds API requests for this month' : `The Odds API: ${body.slice(0, 120)}`);
+  }
+  if (!r.ok) throw new Error(`The Odds API responded ${r.status}`);
+  return r.json();
+}
+
+// "First seen" lines: what the line was the first time this site saw it (an opener stand-in).
+const firstSeenCaches = {};
+function firstSeen(league) {
+  if (!firstSeenCaches[league]) {
+    const file = path.join(path.dirname(DATA_FILE), 'cache', `first-seen-${league}.json`);
+    let map = {};
+    try {
+      map = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {}
+    let timer = null;
+    firstSeenCaches[league] = {
+      map,
+      record(key, value) {
+        if (map[key] || value == null) return map[key];
+        map[key] = { ...value, at: new Date().toISOString() };
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          try {
+            fs.mkdirSync(path.dirname(file), { recursive: true });
+            fs.writeFileSync(file, JSON.stringify(map));
+          } catch {}
+        }, 500);
+        return map[key];
+      },
+    };
+  }
+  return firstSeenCaches[league];
+}
+
+async function getMarket(league, days, refreshOdds) {
+  const sched = await getSchedule(league, days);
+  const games = sched.games.filter((g) => g.state !== 'post');
+  const fs_ = firstSeen(league);
+  let consensusError = null;
+  let events = null;
+  if (oddsApiKey()) {
+    const c = gameOddsCache[league];
+    if (!refreshOdds && c && Date.now() - c.at < ODDS_TTL_MS) events = c.events;
+    else {
+      try {
+        events = await oddsApi(`sports/${market.SPORT_KEYS[league]}/odds?regions=us&markets=h2h,spreads,totals&oddsFormat=american`);
+        gameOddsCache[league] = { at: Date.now(), events };
+      } catch (err) {
+        consensusError = err.message;
+        events = c ? c.events : null;
+      }
+    }
+  }
+  const splitsById = Object.fromEntries((db.splits || []).map((x) => [x.id, x]));
+  return {
+    league,
+    fetchedAt: new Date().toISOString(),
+    odds: { configured: !!oddsApiKey(), remaining: oddsState.remaining, used: oddsState.used, fetchedAt: gameOddsCache[league] ? new Date(gameOddsCache[league].at).toISOString() : null, error: consensusError },
+    games: games.map((g) => {
+      const cur = g.lines && g.lines.current;
+      const seen = cur ? fs_.record(g.id, cur.homeSpread != null || cur.total != null ? { homeSpread: cur.homeSpread, total: cur.total } : null) : fs_.map[g.id];
+      const ev = events ? market.matchOddsEvent(events, g) : null;
+      const pc = propsCache[league] && propsCache[league][g.id];
+      return {
+        ...g,
+        firstSeen: seen || null,
+        consensus: ev ? market.gameConsensus(ev) : null,
+        oddsEventId: ev ? ev.id : null,
+        splits: splitsById[g.id] || null,
+        propsLoadedAt: pc ? new Date(pc.at).toISOString() : null,
+      };
+    }),
+  };
+}
+
+async function getProps(league, gameId, refresh) {
+  const cache = (propsCache[league] = propsCache[league] || {});
+  const c = cache[gameId];
+  if (!refresh && c && Date.now() - c.at < ODDS_TTL_MS) return c;
+  const sched = await getSchedule(league, 14);
+  const game = sched.games.find((g) => g.id === gameId);
+  if (!game) throw Object.assign(new Error('Game not found in the upcoming schedule'), { status: 404 });
+  let eventId = c && c.eventId;
+  if (!eventId) {
+    const events = await oddsApi(`sports/${market.SPORT_KEYS[league]}/events`); // free: doesn't use quota
+    const ev = market.matchOddsEvent(events, game);
+    if (!ev) throw Object.assign(new Error("The Odds API doesn't list this game yet"), { status: 404 });
+    eventId = ev.id;
+  }
+  const markets = Object.keys(market.PROP_MARKETS[league]).join(',');
+  const evOdds = await oddsApi(`sports/${market.SPORT_KEYS[league]}/events/${encodeURIComponent(eventId)}/odds?regions=us&markets=${markets}&oddsFormat=american`);
+  const fs_ = firstSeen(league);
+  const props = market.propsConsensus(evOdds, league).map((p) => ({
+    ...p,
+    firstSeen: p.line != null ? fs_.record(`${gameId}|${p.player}|${p.category}`, { line: p.line }) : null,
+    gameId,
+    matchup: `${game.away.abbr} @ ${game.home.abbr}`,
+    teams: [game.away.abbr, game.home.abbr],
+  }));
+  cache[gameId] = { at: Date.now(), eventId, props, matchup: `${game.away.abbr} @ ${game.home.abbr}` };
+  // new prop lines -> let the streaks finder rebuild so it can compare players against them
+  for (const [k, job] of Object.entries(trendJobs)) if (k.startsWith(league + ':')) job.at = 0;
+  return cache[gameId];
+}
+
+// all prop lines fetched so far (used by the streaks finder)
+function marketProps(league) {
+  return Object.values(propsCache[league] || {}).flatMap((c) => c.props);
+}
+
 // ---------- trends (streaks & suggestions) ----------
 
 const TRENDS_TTL_MS = 3 * 60 * 60 * 1000;
@@ -733,6 +869,25 @@ async function handleApi(req, res, url) {
     }
   }
 
+  if (resource === 'market') {
+    const league = (id || '').toLowerCase();
+    if (!LEAGUE_PATHS[league]) return send(res, 404, { error: 'Unknown league' });
+    const days = Math.min(14, Math.max(1, parseInt(url.searchParams.get('days'), 10) || (league === 'nfl' ? 7 : 2)));
+    return send(res, 200, await getMarket(league, days, url.searchParams.has('refresh')));
+  }
+
+  if (resource === 'props') {
+    const league = (id || '').toLowerCase();
+    const gameId = url.pathname.split('/').filter(Boolean)[3];
+    if (!LEAGUE_PATHS[league] || !gameId) return send(res, 404, { error: 'Unknown league or game' });
+    try {
+      const r = await getProps(league, gameId, url.searchParams.has('refresh'));
+      return send(res, 200, { ...r, fetchedAt: new Date(r.at).toISOString(), odds: { remaining: oddsState.remaining, used: oddsState.used } });
+    } catch (err) {
+      return send(res, err.status || 502, { error: err.message });
+    }
+  }
+
   if (resource === 'trends') {
     const league = (id || '').toLowerCase();
     if (!LEAGUE_PATHS[league]) return send(res, 404, { error: 'Unknown league' });
@@ -774,7 +929,7 @@ async function handleApi(req, res, url) {
   }
 
   const idx = list.findIndex((x) => x.id === id);
-  if (req.method === 'PUT' && idx === -1 && ['teamNotes', 'coaches', 'settings'].includes(resource)) {
+  if (req.method === 'PUT' && idx === -1 && ['teamNotes', 'coaches', 'settings', 'splits'].includes(resource)) {
     // team notes and coaching staffs are keyed by "SPORT-ABBR" and created on first save
     const body = await readBody(req);
     const now = new Date().toISOString();

@@ -197,7 +197,43 @@
     return 'Long shot (+301 or longer)';
   }
 
-  const api = { takeaways, oddsBucket, kellyFraction, bankrollNow, winProfit, toDecimal, toAmerican, parlayOdds, parlayResult, picks, betProfit, impliedProbability, summarize, groupStats, cumulative, streak };
+  // Signals from public betting splits (percentages entered by you) and line movement.
+  // splits: { homeBets, homeMoney, overBets, overMoney } (0-100, home/over side; the other side is 100 - x)
+  // lines: { homeSpreadOpen, homeSpreadNow, totalOpen, totalNow }; names: { home, away }
+  function splitsSignals(splits, lines, names) {
+    const out = [];
+    if (!splits) return out;
+    const n = (v) => (v === '' || v == null || !isFinite(Number(v)) ? null : Number(v));
+    const hb = n(splits.homeBets), hm = n(splits.homeMoney), ob = n(splits.overBets), om = n(splits.overMoney);
+    const side = (homeSide) => (homeSide ? names.home : names.away);
+    if (hb != null && hm != null) {
+      const gap = hm - hb;
+      if (Math.abs(gap) >= 15) {
+        const home = gap > 0;
+        out.push({ type: 'sharp', text: `💰 Bigger bets on ${side(home)}: ${home ? hb : 100 - hb}% of bets but ${home ? hm : 100 - hm}% of the money` });
+      }
+    }
+    if (hb != null && (hb >= 70 || hb <= 30)) out.push({ type: 'public', text: `🐑 ${side(hb >= 70)} is the public side (${hb >= 70 ? hb : 100 - hb}% of spread bets)` });
+    const so = n(lines && lines.homeSpreadOpen), sn = n(lines && lines.homeSpreadNow);
+    if (hb != null && so != null && sn != null && so !== sn) {
+      // books normally move the line against the popular side; moving the other way = reverse line movement
+      if (hb >= 60 && sn > so) out.push({ type: 'rlm', text: `↩️ Reverse line movement toward ${names.away}: ${hb}% of bets on ${names.home}, but the line moved ${fmtLine(so)} → ${fmtLine(sn)}` });
+      if (hb <= 40 && sn < so) out.push({ type: 'rlm', text: `↩️ Reverse line movement toward ${names.home}: ${100 - hb}% of bets on ${names.away}, but ${names.home} moved ${fmtLine(so)} → ${fmtLine(sn)}` });
+    }
+    if (ob != null && om != null && Math.abs(om - ob) >= 15) {
+      const over = om > ob;
+      out.push({ type: 'sharp', text: `💰 Bigger bets on the ${over ? 'over' : 'under'}: ${over ? ob : 100 - ob}% of bets but ${over ? om : 100 - om}% of the money` });
+    }
+    const to = n(lines && lines.totalOpen), tn = n(lines && lines.totalNow);
+    if (ob != null && to != null && tn != null && to !== tn) {
+      if (ob >= 60 && tn < to) out.push({ type: 'rlm', text: `↩️ Total dropped ${to} → ${tn} even though ${ob}% of bets are on the over` });
+      if (ob <= 40 && tn > to) out.push({ type: 'rlm', text: `↩️ Total rose ${to} → ${tn} even though ${100 - ob}% of bets are on the under` });
+    }
+    return out;
+  }
+  const fmtLine = (x) => (x > 0 ? '+' + x : String(x));
+
+  const api = { splitsSignals, takeaways, oddsBucket, kellyFraction, bankrollNow, winProfit, toDecimal, toAmerican, parlayOdds, parlayResult, picks, betProfit, impliedProbability, summarize, groupStats, cumulative, streak };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BetStats = api;
 })(typeof window !== 'undefined' ? window : globalThis);

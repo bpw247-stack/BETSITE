@@ -17,6 +17,7 @@ const { createUpdater } = require('./lib/updater');
 const niche = require('./lib/niche');
 const grading = require('./lib/grading');
 const weather = require('./lib/weather');
+const trends = require('./lib/trends');
 const { createAuth, isLocalRequest, loginPage, blockedPage } = require('./lib/auth');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -331,6 +332,8 @@ async function getTeamNiche(league, team, force) {
     splits: niche.situationalSplits(games, league, team),
     ats: ats.ats,
     ou: ats.ou,
+    atsStreak: ats.atsStreak,
+    ouStreak: ats.ouStreak,
     atsGames: recent.length,
     gamesWithLine: ats.gamesWithLine,
     recent: games.slice(-5).reverse().map(({ date, home, opp, teamScore, oppScore, result }) => ({ date, home, opp, teamScore, oppScore, result })),
@@ -488,6 +491,103 @@ async function getWeather(home, kickoff, { neutral, indoor } = {}) {
   return data;
 }
 
+// ---------- trends (streaks & suggestions) ----------
+
+const TRENDS_TTL_MS = 3 * 60 * 60 * 1000;
+const trendJobs = {}; // `${league}:${days}` -> { status, progress, data, at, error }
+
+function etSlots(iso) {
+  return niche.nflSlots(iso);
+}
+
+async function buildTrends(league, days, job) {
+  const sched = await getSchedule(league, days);
+  const upcoming = sched.games.filter((g) => g.state !== 'post');
+  const teamGames = new Map(); // team -> { game, opp, home }
+  for (const g of upcoming) {
+    if (!teamGames.has(g.home.abbr)) teamGames.set(g.home.abbr, { game: g, opp: g.away.abbr, home: true });
+    if (!teamGames.has(g.away.abbr)) teamGames.set(g.away.abbr, { game: g, opp: g.home.abbr, home: false });
+  }
+  const teams = [...teamGames.keys()];
+  job.progress = { done: 0, total: teams.length };
+  const teamItems = [];
+  const logsByTeam = {};
+
+  await pool(teams, 3, async (team) => {
+    const ctx = teamGames.get(team);
+    const fav = /^([A-Z]{2,4})\s+-/.exec(ctx.game.spread || '');
+    try {
+      const n = await getTeamNiche(league, team);
+      for (const item of trends.teamTrends(n, { opp: ctx.opp, home: ctx.home, slots: league === 'nfl' ? etSlots(ctx.game.date) : {}, favorite: fav ? fav[1] : null })) {
+        teamItems.push({ ...item, gameId: ctx.game.id, gameDate: ctx.game.date, matchup: `${ctx.game.away.abbr} @ ${ctx.game.home.abbr}`, spread: ctx.game.spread, overUnder: ctx.game.overUnder });
+      }
+    } catch (err) {
+      console.warn(`Trends: team stats for ${team} failed: ${err.message}`);
+    }
+    // recent box scores for player streaks
+    try {
+      const season = niche.nicheSeasons(league).slice(-1)[0];
+      let games = [];
+      for (const s of [season, season - 1]) {
+        const payloads = await getTeamSeasonSchedule(league, team, s);
+        games = games.concat(payloads.flatMap((p) => niche.gamesFromSchedule(p, team)));
+        if (games.length >= 10) break;
+      }
+      const seen = new Set();
+      games = games.filter((g) => !seen.has(g.id) && seen.add(g.id)).sort((a, b) => a.date.localeCompare(b.date)).slice(-10);
+      const boxes = {};
+      await pool(games, 3, async (g) => {
+        try {
+          boxes[g.id] = await getBoxScore(league, g.id);
+        } catch {}
+      });
+      logsByTeam[team] = trends.playerLogs(games, boxes, team);
+    } catch (err) {
+      console.warn(`Trends: box scores for ${team} failed: ${err.message}`);
+    }
+    job.progress.done++;
+  });
+
+  const withGame = (item) => {
+    const ctx = teamGames.get(item.team) || {};
+    const g = ctx.game || {};
+    return { ...item, opp: ctx.opp, gameId: g.id, gameDate: g.date, matchup: g.id ? `${g.away.abbr} @ ${g.home.abbr}` : '' };
+  };
+  const players = Object.values(logsByTeam).flatMap((logs) => trends.milestoneStreaks(logs, league)).map(withGame);
+  const props = cachedPropsFor(league);
+  const propItems = props.length ? trends.propLineStreaks(logsByTeam, props, league).map(withGame) : [];
+  return {
+    league,
+    days,
+    builtAt: new Date().toISOString(),
+    games: upcoming.length,
+    teams: teamItems.sort((a, b) => b.score - a.score),
+    players: players.slice(0, 120),
+    propLines: propItems.slice(0, 80),
+    propsAvailable: props.length,
+  };
+}
+
+function trendsStatus(league, days, force) {
+  const key = `${league}:${days}`;
+  const job = trendJobs[key] || (trendJobs[key] = { status: 'idle' });
+  const stale = !job.at || Date.now() - job.at > TRENDS_TTL_MS;
+  if (job.status !== 'building' && (force || stale)) {
+    job.status = 'building';
+    job.error = null;
+    job.progress = { done: 0, total: 0 };
+    buildTrends(league, days, job)
+      .then((data) => Object.assign(job, { status: 'ready', data, at: Date.now() }))
+      .catch((err) => Object.assign(job, { status: job.data ? 'ready' : 'error', error: err.message }));
+  }
+  return { status: job.status, progress: job.progress, error: job.error, data: job.data || null };
+}
+
+// Prop lines fetched on the Market tab (none until the props feature is used).
+function cachedPropsFor(league) {
+  return typeof marketProps === 'function' ? marketProps(league) : [];
+}
+
 // ---------- phone access ----------
 
 async function handleAuthApi(req, res, url, local) {
@@ -631,6 +731,13 @@ async function handleApi(req, res, url) {
     } catch (err) {
       return send(res, err.status || 502, { error: err.message });
     }
+  }
+
+  if (resource === 'trends') {
+    const league = (id || '').toLowerCase();
+    if (!LEAGUE_PATHS[league]) return send(res, 404, { error: 'Unknown league' });
+    const days = Math.min(14, Math.max(1, parseInt(url.searchParams.get('days'), 10) || (league === 'nfl' ? 7 : 2)));
+    return send(res, 200, trendsStatus(league, days, url.searchParams.has('refresh')));
   }
 
   if (resource === 'autosettle' && req.method === 'POST') {

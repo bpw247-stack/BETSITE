@@ -90,3 +90,19 @@ test('nicheSeasons and head coach parsing', () => {
   assert.strictEqual(N.headCoachFromRoster({}), null);
   assert.strictEqual(N.divisionOf('nfl', 'KC'), 'AFC West');
 });
+
+test('atsSplits reports current ATS / O-U streaks and night-game ATS', () => {
+  const mk = (date, ts, os, spread, ou) => ({ date, home: true, teamScore: ts, oppScore: os, line: { favorite: 'KC', spread, overUnder: ou } });
+  const games = [
+    mk('2025-09-08T00:20Z', 10, 20, -3, 40), // L, under
+    mk('2025-09-21T17:00Z', 27, 20, -3, 40), // W, over
+    mk('2025-09-28T17:00Z', 24, 21, -3, 50), // P (push), under
+    mk('2025-10-06T00:20Z', 30, 10, -7, 44), // W (SNF), under
+  ];
+  const r = N.atsSplits(games, 'nfl', 'KC');
+  assert.deepStrictEqual(r.atsStreak, { type: 'W', length: 2 });
+  assert.deepStrictEqual(r.ouStreak, { type: 'U', length: 2 });
+  const snf = r.ats.find((x) => x.key === 'snf');
+  assert.deepStrictEqual([snf.w, snf.l], [1, 1]);
+  assert.ok(!r.ats.find((x) => x.key === 'mnf')); // no MNF games -> row omitted
+});

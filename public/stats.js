@@ -61,6 +61,25 @@
     return 0;
   }
 
+  // Kelly criterion: fraction of bankroll to stake given your own win probability (0-1).
+  // Returns 0 when the bet has no edge at these odds.
+  function kellyFraction(odds, winProb) {
+    odds = Number(odds);
+    const p = Number(winProb);
+    if (!isFinite(odds) || Math.abs(odds) < 100 || !(p > 0 && p < 1)) return 0;
+    const b = toDecimal(odds) - 1;
+    return Math.max(0, (b * p - (1 - p)) / b);
+  }
+
+  // Current bankroll: starting amount plus P/L of bets settled on/after the start date.
+  function bankrollNow(settings, bets) {
+    const start = Number(settings && settings.bankroll);
+    if (!(start > 0)) return null;
+    if (settings.trackProfit === false) return start;
+    const since = settings.bankrollDate || '';
+    return start + bets.filter((b) => !since || String(b.date) >= since).reduce((sum, b) => sum + betProfit(b), 0);
+  }
+
   function impliedProbability(odds) {
     odds = Number(odds);
     if (!isFinite(odds) || Math.abs(odds) < 100) return null;
@@ -155,7 +174,7 @@
     return { type, length };
   }
 
-  const api = { winProfit, toDecimal, toAmerican, parlayOdds, parlayResult, picks, betProfit, impliedProbability, summarize, groupStats, cumulative, streak };
+  const api = { kellyFraction, bankrollNow, winProfit, toDecimal, toAmerican, parlayOdds, parlayResult, picks, betProfit, impliedProbability, summarize, groupStats, cumulative, streak };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BetStats = api;
 })(typeof window !== 'undefined' ? window : globalThis);

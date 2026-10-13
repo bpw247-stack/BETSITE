@@ -65,6 +65,18 @@
       ? '<span class="muted">—</span>'
       : `<div class="meter" title="${pct(rate)} win rate"><div class="bar"><div class="fill" style="width:${(rate * 100).toFixed(1)}%"></div></div><span class="pct">${pct(rate)}</span></div>`;
 
+  // ---- bankroll & bet sizing ----
+  const sizing = () => {
+    const s = state.settings || {};
+    const bankroll = S.bankrollNow(s, state.bets);
+    if (bankroll == null) return null;
+    const unitPct = Number(s.unitPct) || 1;
+    return { bankroll, unitPct, unit: Math.max(0, bankroll * unitPct / 100), maxPct: Number(s.maxPct) || 5 };
+  };
+  async function saveSettings(patch) {
+    state.settings = await api('PUT', '/api/settings/app', { ...state.settings, ...patch });
+  }
+
   function teamName(sport, abbr) {
     const t = (window.LEAGUES[sport] || []).find(([a]) => a === abbr);
     return t ? t[1] : abbr || '';
@@ -126,8 +138,10 @@
   }
 
   async function loadAll() {
-    const [bets, notes, teamNotes, coaches] = await Promise.all([api('GET', '/api/bets'), api('GET', '/api/notes'), api('GET', '/api/teamNotes'), api('GET', '/api/coaches')]);
-    Object.assign(state, { bets, notes, teamNotes, coaches });
+    const [bets, notes, teamNotes, coaches, settings] = await Promise.all(
+      ['bets', 'notes', 'teamNotes', 'coaches', 'settings'].map((c) => api('GET', '/api/' + c))
+    );
+    Object.assign(state, { bets, notes, teamNotes, coaches, settings: settings.find((x) => x.id === 'app') || {} });
   }
 
   // ---------- data mutations ----------
@@ -218,6 +232,7 @@
       <div class="tile"><div class="label">Win rate</div><div class="value">${pct(s.winRate)}</div><div class="sub">pushes excluded</div></div>
       <div class="tile"><div class="label">ROI</div><div class="value">${roiHtml(s.roi)}</div><div class="sub">profit ÷ settled stake</div></div>
       <div class="tile"><div class="label">Pending</div><div class="value">${s.pending}</div><div class="sub">${money(s.atRisk)} at risk</div></div>
+      ${!extra && sizing() ? `<div class="tile"><div class="label">Bankroll</div><div class="value">${money(sizing().bankroll)}</div><div class="sub">1 unit = ${money(sizing().unit)}</div></div>` : ''}
       ${extra || (st ? `<div class="tile"><div class="label">Streak</div><div class="value ${st.type === 'won' ? 'pos' : 'neg'}">${st.type === 'won' ? 'W' : 'L'}${st.length}</div><div class="sub">current run</div></div>` : '')}
     </div>`;
   }
@@ -1547,6 +1562,21 @@
 
   // ---------- settings / backup ----------
 
+  function bankrollCardHtml() {
+    const s = state.settings || {};
+    const z = sizing();
+    return `<div class="card" id="bankrollCard"><div class="card-head"><h2>💰 Bankroll & bet sizing</h2>${z ? `<span class="muted small">current bankroll <strong>${money(z.bankroll)}</strong> · 1 unit = <strong>${money(z.unit)}</strong></span>` : ''}</div>
+      <p class="muted small" style="margin-top:0">The site suggests bet sizes as a percentage of your bankroll ("units"). Most bettors use 1–2% per bet, so a bad run can't wipe them out.</p>
+      <form id="bankrollForm" class="form-grid">
+        <div class="field"><label>Starting bankroll ($)</label><input name="bankroll" type="number" min="0" step="1" value="${esc(s.bankroll ?? '')}" placeholder="e.g. 1000"></div>
+        <div class="field"><label>Starting date</label><input name="bankrollDate" type="date" value="${esc(s.bankrollDate || today())}"></div>
+        <div class="field"><label>1 unit =</label><select name="unitPct">${[0.5, 1, 1.5, 2, 3, 5].map((v) => `<option value="${v}" ${Number(s.unitPct || 1) === v ? 'selected' : ''}>${v}% of bankroll</option>`).join('')}</select></div>
+        <div class="field"><label>Warn me above</label><select name="maxPct">${[2, 3, 5, 10].map((v) => `<option value="${v}" ${Number(s.maxPct || 5) === v ? 'selected' : ''}>${v}% of bankroll on one bet</option>`).join('')}</select></div>
+        <label class="btn-row full" style="color:var(--text)"><input type="checkbox" name="trackProfit" ${s.trackProfit === false ? '' : 'checked'} style="width:auto"> Add my wins and losses since the starting date to the bankroll automatically</label>
+        <div class="full"><button class="btn primary" type="submit">Save bankroll</button></div>
+      </form></div>`;
+  }
+
   function updatesCardHtml() {
     const u = state.update;
     const short = (sha) => (sha ? sha.slice(0, 7) : 'unknown');
@@ -1571,6 +1601,7 @@
   function renderSettings() {
     app.innerHTML = `
       <div class="page-head"><div><h1>Settings & backup</h1><div class="muted">Your data is stored on this computer in <code>data/db.json</code>.</div></div></div>
+      ${bankrollCardHtml()}
       ${updatesCardHtml()}
       <div class="grid cols-2 section">
         <div class="card"><h2>Export</h2><p class="muted">Download everything (bets, notes, team notes) as JSON, or your bets as a CSV spreadsheet.</p>
@@ -1583,6 +1614,13 @@
         <dt>Bet notes</dt><dd>${state.bets.reduce((n, b) => n + (b.notes || []).length, 0)}</dd>
         <dt>Team notes</dt><dd>${state.teamNotes.reduce((n, t) => n + (t.entries || []).length, 0)}</dd></dl></div>`;
     document.getElementById('csvBtn').addEventListener('click', downloadCsv);
+    document.getElementById('bankrollForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      await saveSettings({ bankroll: f.bankroll.value === '' ? '' : Number(f.bankroll.value), bankrollDate: f.bankrollDate.value, unitPct: Number(f.unitPct.value), maxPct: Number(f.maxPct.value), trackProfit: f.trackProfit.checked });
+      toast('Bankroll saved');
+      render();
+    });
     document.getElementById('checkUpdates').addEventListener('click', async () => {
       state.update = null;
       render();
@@ -1666,7 +1704,7 @@
         <div class="field full"><label>Pick description <span class="muted">(optional — auto-generated if blank)</span></label>
           <input name="pick" value="${esc(b.pick || '')}" placeholder="e.g. Sunday night special"></div>
         <div class="field"><label data-odds-label>Odds (American)</label><input name="odds" type="number" step="1" value="${esc(b.odds ?? -110)}" required><div class="hint" id="oddsHint">e.g. -110, +150</div></div>
-        <div class="field"><label>Stake ($)</label><input name="stake" type="number" step="0.01" min="0" value="${esc(b.stake ?? '')}" required></div>
+        <div class="field"><label>Stake ($)</label><input name="stake" type="number" step="0.01" min="0" value="${esc(b.stake ?? '')}" required><div id="stakeHelper" class="stake-helper"></div></div>
         <div class="field"><label>Sportsbook</label><input name="book" value="${esc(b.book || '')}" list="bookList" placeholder="e.g. DraftKings">
           <datalist id="bookList">${[...new Set([...books, 'DraftKings', 'FanDuel', 'BetMGM', 'Caesars', 'ESPN Bet', 'Fanatics', 'bet365'])].map((x) => `<option value="${esc(x)}">`).join('')}</datalist></div>
         <div class="field"><label>Actual P/L override ($)</label><input name="profitOverride" type="number" step="0.01" value="${esc(b.profitOverride ?? '')}" placeholder="optional"><div class="hint">For cash-outs, boosts, free bets</div></div>
@@ -1782,7 +1820,43 @@
       f.querySelector('#propList').innerHTML = (window.PROP_CATEGORIES[sport] || window.PROP_CATEGORIES.Other).map((c) => `<option value="${esc(c)}">`).join('');
       updateToWin();
     };
+    const stakeHelper = f.querySelector('#stakeHelper');
+    let winChance = '';
+    const renderStakeHelper = () => {
+      const z = sizing();
+      if (!z) {
+        stakeHelper.innerHTML = '<a href="#/settings" data-close-modal>Set your bankroll</a> to get suggested bet sizes.';
+        return;
+      }
+      const stake = Number(f.stake.value) || 0;
+      const kelly = winChance ? S.kellyFraction(f.odds.value, Number(winChance) / 100) : null;
+      const quarterKelly = kelly != null ? Math.round(z.bankroll * kelly * 25) / 100 : null;
+      const tooBig = stake > z.bankroll * z.maxPct / 100;
+      stakeHelper.innerHTML = `
+        <div>1 unit = <strong>${money(z.unit)}</strong> <span class="muted">(${z.unitPct}% of ${money(z.bankroll)})</span></div>
+        <div class="btn-row unit-btns">${[0.5, 1, 2, 3].map((u) => `<button type="button" class="btn sm" data-units="${u}">${u}u · ${money(z.unit * u)}</button>`).join('')}</div>
+        ${isParlay() ? '<div class="muted">Parlays hit less often, so many bettors keep them to 0.25–0.5 units.</div>' : ''}
+        <div class="kelly-row">If you think this wins <input type="number" min="1" max="99" step="1" data-win-chance value="${esc(winChance)}" placeholder="%"> % of the time →
+          ${kelly == null ? '<span class="muted">enter a % for a Kelly-based size</span>' : kelly <= 0 ? '<span class="neg">no edge at these odds; consider passing</span>' : `¼-Kelly suggests <strong>${money(quarterKelly)}</strong> <button type="button" class="btn sm" data-use-kelly="${quarterKelly}">Use</button>`}</div>
+        ${tooBig ? `<div class="alert small" style="margin:6px 0 0">⚠️ This is ${((stake / z.bankroll) * 100).toFixed(1)}% of your bankroll, above your ${z.maxPct}% limit.</div>` : ''}`;
+      stakeHelper.querySelectorAll('[data-units]').forEach((btn) =>
+        btn.addEventListener('click', () => {
+          f.stake.value = (Math.round(z.unit * Number(btn.dataset.units) * 100) / 100).toFixed(2);
+          updateToWin();
+        })
+      );
+      const use = stakeHelper.querySelector('[data-use-kelly]');
+      if (use) use.addEventListener('click', () => ((f.stake.value = Number(use.dataset.useKelly).toFixed(2)), updateToWin()));
+      const wc = stakeHelper.querySelector('[data-win-chance]');
+      wc.addEventListener('change', () => {
+        winChance = wc.value;
+        renderStakeHelper();
+      });
+      const link = stakeHelper.querySelector('[data-close-modal]');
+      if (link) link.addEventListener('click', () => modal.close());
+    };
     const updateToWin = () => {
+      renderStakeHelper();
       const win = S.winProfit(f.odds.value, f.stake.value);
       const imp = S.impliedProbability(f.odds.value);
       document.getElementById('toWin').textContent = win ? `To win ${money(win)} (payout ${money(win + Number(f.stake.value))})${imp != null ? ` · implied probability ${pct(imp)}` : ''}` : '';

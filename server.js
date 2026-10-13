@@ -29,13 +29,13 @@ const updater = createUpdater({ appDir: __dirname, dataDir: path.dirname(DATA_FI
 let updateCheckCache = null;
 const BOOT_ID = crypto.randomUUID(); // changes on every restart, so the page can tell the new server is up
 
-const COLLECTIONS = ['bets', 'notes', 'teamNotes', 'coaches'];
+const COLLECTIONS = ['bets', 'notes', 'teamNotes', 'coaches', 'settings'];
 const LEAGUE_PATHS = { nfl: 'football/nfl', nba: 'basketball/nba' };
 
 // ---------- storage ----------
 
 function emptyDb() {
-  return { bets: [], notes: [], teamNotes: [], coaches: [] };
+  return { bets: [], notes: [], teamNotes: [], coaches: [], settings: [] };
 }
 
 function loadDb() {
@@ -461,7 +461,7 @@ async function handleApi(req, res, url) {
   }
 
   const idx = list.findIndex((x) => x.id === id);
-  if (req.method === 'PUT' && idx === -1 && (resource === 'teamNotes' || resource === 'coaches')) {
+  if (req.method === 'PUT' && idx === -1 && ['teamNotes', 'coaches', 'settings'].includes(resource)) {
     // team notes and coaching staffs are keyed by "SPORT-ABBR" and created on first save
     const body = await readBody(req);
     const now = new Date().toISOString();

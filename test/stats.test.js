@@ -100,3 +100,18 @@ test('picks expands parlay legs; legs count for record but not money', () => {
   const props = S.groupStats(picks.filter((p) => p.propCategory), (p) => p.propCategory);
   assert.deepStrictEqual([props[0].key, props[0].lost, props[0].winRate], ['Passing Yards', 1, 0]);
 });
+
+test('kellyFraction and bankrollNow', () => {
+  // even money, 55% -> (1*0.55 - 0.45)/1 = 0.10
+  close(S.kellyFraction(100, 0.55), 0.1);
+  assert.strictEqual(S.kellyFraction(-110, 0.5), 0); // no edge
+  assert.strictEqual(S.kellyFraction(-110, 1.5), 0); // nonsense probability
+  const bets = [
+    { date: '2026-10-01', result: 'won', odds: 100, stake: 50 },
+    { date: '2026-09-01', result: 'lost', odds: 100, stake: 50 }, // before start date
+    { date: '2026-10-02', result: 'lost', odds: 100, stake: 20 },
+  ];
+  assert.strictEqual(S.bankrollNow({ bankroll: 1000, bankrollDate: '2026-09-15' }, bets), 1030);
+  assert.strictEqual(S.bankrollNow({ bankroll: 1000, trackProfit: false }, bets), 1000);
+  assert.strictEqual(S.bankrollNow({}, bets), null);
+});

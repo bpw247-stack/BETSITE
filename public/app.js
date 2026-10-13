@@ -224,6 +224,13 @@
     const { parts, params } = parseHash();
     const view = views[parts[0]] ? parts[0] : 'dashboard';
     document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === (navFor[view] || view)));
+    // On phones the nav scrolls sideways; keep the current page's tab in view.
+    const nav = document.getElementById('nav');
+    const cur = nav.querySelector('a.active');
+    if (cur && nav.scrollWidth > nav.clientWidth) {
+      const l = cur.offsetLeft - nav.offsetLeft, r = l + cur.offsetWidth;
+      if (l < nav.scrollLeft || r > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = l - 24;
+    }
     hideTooltip();
     views[view](parts.slice(1), params);
   }
@@ -255,17 +262,17 @@
       .map((g) => {
         const href = link ? link(g) : null;
         return `<tr${href ? ` class="clickable" data-href="${esc(href)}"` : ''}>
-          <td>${href ? `<a href="${esc(href)}">${esc(label ? label(g) : g.key)}</a>` : esc(label ? label(g) : g.key)}</td>
-          <td class="num">${g.count}${g.legs ? `<span class="sub" title="Parlay legs included">${g.legs} in parlays</span>` : ''}</td>
-          <td class="num">${record(g)}</td>
-          <td>${meter(g.winRate)}</td>
+          <td class="c-label">${href ? `<a href="${esc(href)}">${esc(label ? label(g) : g.key)}</a>` : esc(label ? label(g) : g.key)}</td>
+          <td class="num" data-label="Picks">${g.count}${g.legs ? `<span class="sub" title="Parlay legs included">${g.legs} in parlays</span>` : ''}</td>
+          <td class="num" data-label="W-L-P">${record(g)}</td>
+          <td data-label="Success">${meter(g.winRate)}</td>
           <td class="num hide-sm">${money(g.staked)}</td>
-          <td class="num">${plHtml(g.profit)}</td>
+          <td class="num" data-label="P/L">${plHtml(g.profit)}</td>
           <td class="num hide-sm">${roiHtml(g.roi)}</td>
         </tr>`;
       })
       .join('');
-    return `<div class="table-wrap"><table>
+    return `<div class="table-wrap"><table class="group-table">
       <thead><tr><th></th><th class="num">Picks</th><th class="num">W-L-P</th><th>Success rate</th><th class="num hide-sm">Staked</th><th class="num">P/L</th><th class="num hide-sm">ROI</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   }
@@ -288,16 +295,16 @@
             : '';
         return `<tr class="clickable" data-href="#/bet/${encodeURIComponent(b.id)}">
           <td class="hide-sm" style="white-space:nowrap">${fmtDate(b.date)}</td>
-          <td><a href="#/bet/${encodeURIComponent(b.id)}">${esc(betTitle(b))}</a>${hasLegs(b) ? `<span class="sub legs-line">${esc(legsSummary(b))}</span>` : ''}<span class="sub">${esc(betSub(b))}<span class="show-sm"> · ${fmtDate(b.date)}</span>${nNotes ? ` · 📝 ${nNotes}` : ''}</span></td>
+          <td class="c-title"><a href="#/bet/${encodeURIComponent(b.id)}">${esc(betTitle(b))}</a>${hasLegs(b) ? `<span class="sub legs-line">${esc(legsSummary(b))}</span>` : ''}<span class="sub">${esc(betSub(b))}<span class="show-sm"> · ${fmtDate(b.date)}</span>${nNotes ? ` · 📝 ${nNotes}` : ''}</span></td>
           <td class="num hide-sm">${oddsStr(b.odds)}</td>
-          <td class="num">${money(b.stake)}<span class="sub show-sm-block">${oddsStr(b.odds)}</span></td>
-          <td>${badge(b.result)}</td>
-          <td class="num">${b.result && b.result !== 'pending' ? plHtml(p) : `<span class="muted" title="To win">${money(S.winProfit(b.odds, b.stake))}</span>`}</td>
-          <td>${settleBtns}</td>
+          <td class="num c-stake">${money(b.stake)}<span class="sub show-sm-block">${oddsStr(b.odds)}</span></td>
+          <td class="c-result">${badge(b.result)}</td>
+          <td class="num c-pl">${b.result && b.result !== 'pending' ? plHtml(p) : `<span class="muted" title="To win">${money(S.winProfit(b.odds, b.stake))}</span>`}</td>
+          <td class="c-act">${settleBtns}</td>
         </tr>`;
       })
       .join('');
-    return `<div class="table-wrap"><table>
+    return `<div class="table-wrap"><table class="bets-table">
       <thead><tr>${th('date', 'Date', 'hide-sm')}${th('title', 'Bet')}${th('odds', 'Odds', 'num hide-sm')}${th('stake', 'Stake', 'num')}${th('result', 'Result')}${th('profit', 'P/L', 'num')}<th></th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   }

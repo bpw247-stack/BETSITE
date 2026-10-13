@@ -18,6 +18,9 @@
     h2hOpen: new Set(), // keys of expanded "previous matchups" panels
     niche: {}, // `${league}:${a}:${b}` -> { loading, data, error }
     weather: {}, // `${home}|${kickoff}|${neutral}|${indoor}` -> forecast
+    market: {}, // `${league}:${days}` -> { loading, data, error }
+    props: {}, // `${league}:${gameId}` -> { loading, data, error }
+    trends: {}, // `${league}:${days}` -> last /api/trends response
     coaches: [], // coaching staffs you've entered, keyed "SPORT-ABBR"
     sort: { key: 'date', dir: -1 },
   };
@@ -211,6 +214,7 @@
     team: renderTeamDetail,
     injuries: renderInjuries,
     matchups: renderMatchups,
+    market: renderMarket,
     notes: renderNotes,
     settings: renderSettings,
   };
@@ -1546,6 +1550,404 @@
     modalForm.onclick = null;
   });
 
+  // ---------- market ----------
+
+  const signed = (x) => (x == null ? '—' : x > 0 ? '+' + x : String(x));
+  const lineFor = (team, game) => {
+    // team's spread from the game's ESPN details ("KC -3.5")
+    const m = /^([A-Z]{2,4})\s+(-?\d+(?:\.\d+)?)$/.exec(game.spread || '');
+    if (!m) return /^(EVEN|PK)/i.test(game.spread || '') ? 0 : '';
+    return m[1] === team ? -Math.abs(Number(m[2])) : Math.abs(Number(m[2]));
+  };
+  const gameDateOnly = (iso) => {
+    const d = new Date(iso);
+    return isNaN(d) ? today() : new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  };
+
+  function loadMarket(league, days, refresh) {
+    const key = `${league}:${days}`;
+    const cur = state.market[key];
+    if (cur && cur.loading) return cur.promise;
+    const entry = { loading: true, data: cur && cur.data };
+    entry.promise = api('GET', `/api/market/${league}?days=${days}${refresh ? '&refresh=1' : ''}`)
+      .then((data) => Object.assign(entry, { loading: false, data, error: null }))
+      .catch((err) => Object.assign(entry, { loading: false, error: err.message }));
+    state.market[key] = entry;
+    return entry.promise;
+  }
+
+  function loadProps(league, gameId, refresh) {
+    const key = `${league}:${gameId}`;
+    const cur = state.props[key];
+    if (cur && cur.loading) return cur.promise;
+    const entry = { loading: true, data: cur && cur.data };
+    entry.promise = api('GET', `/api/props/${league}/${encodeURIComponent(gameId)}${refresh ? '?refresh=1' : ''}`)
+      .then((data) => Object.assign(entry, { loading: false, data, error: null }))
+      .catch((err) => Object.assign(entry, { loading: false, error: err.message }));
+    state.props[key] = entry;
+    return entry.promise;
+  }
+
+  function moveHtml(open, now) {
+    if (open == null || now == null || open === now) return '';
+    const d = Math.round((now - open) * 10) / 10;
+    return ` <span class="mv ${d > 0 ? 'up' : 'down'}" title="moved ${d > 0 ? '+' : ''}${d} since open">${d > 0 ? '▲' : '▼'}${Math.abs(d)}</span>`;
+  }
+
+  function splitBar(label, leftName, leftPct, rightName) {
+    if (leftPct === '' || leftPct == null) return '';
+    const l = Number(leftPct);
+    return `<div class="split-row"><span class="split-label">${esc(label)}</span>
+      <div class="split-bar" title="${esc(leftName)} ${l}% · ${esc(rightName)} ${100 - l}%"><div class="split-l" style="width:${l}%"><span>${esc(leftName)} ${l}%</span></div><div class="split-r"><span>${100 - l}% ${esc(rightName)}</span></div></div></div>`;
+  }
+
+  function marketGameHtml(g, league) {
+    const h = g.home.abbr, a = g.away.abbr;
+    const cur = (g.lines && g.lines.current) || {};
+    const espnOpen = g.lines && g.lines.open;
+    const open = espnOpen || g.firstSeen || {};
+    const openLabel = espnOpen ? `Open${g.lines.provider ? ` (${esc(g.lines.provider)})` : ''}` : g.firstSeen ? `First seen <span class="muted">${fmtDate(g.firstSeen.at.slice(0, 10))}</span>` : 'Open';
+    const c = g.consensus;
+    const best = (b, total) => (b ? `${b.point != null ? (total ? b.point : signed(b.point)) + ' ' : ''}<strong>${oddsStr(b.price)}</strong> <span class="muted small">${esc(b.book)}</span>` : '—');
+    const spreadTxt = (x) => (x == null ? '—' : `${h} ${signed(x)}`);
+    const s = g.splits;
+    const signals = S.splitsSignals(s, { homeSpreadOpen: open.homeSpread, homeSpreadNow: cur.homeSpread, totalOpen: open.total, totalNow: cur.total }, { home: h, away: a });
+    return `<div class="card mk-game" data-game="${esc(g.id)}">
+      <div class="card-head"><h3 style="margin:0">${esc(g.away.name)} @ ${esc(g.home.name)}</h3><span class="muted small">${fmtGameTime(g.date)}${g.state === 'in' ? ' · <span class="badge out">LIVE</span>' : ''}</span></div>
+      <div class="table-wrap"><table class="mk-table"><thead><tr><th></th><th>${openLabel}</th><th>Now (ESPN)</th><th>Consensus${c ? ` <span class="muted">(${c.books} books)</span>` : ''}</th><th>Best price</th></tr></thead><tbody>
+        <tr><td>Spread</td><td>${spreadTxt(open.homeSpread)}</td><td>${spreadTxt(cur.homeSpread)}${moveHtml(open.homeSpread, cur.homeSpread)}</td><td>${c ? spreadTxt(c.consensus.homeSpread) : '—'}</td>
+          <td>${c ? `${esc(h)} ${best(c.best.homeSpread)}<br>${esc(a)} ${best(c.best.awaySpread)}` : '—'}</td></tr>
+        <tr><td>Total</td><td>${open.total ?? '—'}</td><td>${cur.total ?? '—'}${moveHtml(open.total, cur.total)}</td><td>${c && c.consensus.total != null ? c.consensus.total : '—'}</td>
+          <td>${c ? `O ${best(c.best.over, true)}<br>U ${best(c.best.under, true)}` : '—'}</td></tr>
+        <tr><td>Moneyline</td><td>${open.homeML != null ? `${esc(h)} ${oddsStr(open.homeML)}` : '—'}</td><td>${cur.homeML != null ? `${esc(h)} ${oddsStr(cur.homeML)} / ${esc(a)} ${oddsStr(cur.awayML)}` : '—'}</td>
+          <td>${c && c.consensus.homeML != null ? `${esc(h)} ${oddsStr(Math.round(c.consensus.homeML))} / ${esc(a)} ${oddsStr(Math.round(c.consensus.awayML))}` : '—'}</td>
+          <td>${c ? `${esc(h)} ${best(c.best.homeML)}<br>${esc(a)} ${best(c.best.awayML)}` : '—'}</td></tr>
+      </tbody></table></div>
+      <div class="mk-splits">
+        <div class="card-head" style="margin:10px 0 4px"><strong>Public betting splits</strong><button type="button" class="btn sm" data-edit-splits="${esc(g.id)}">${s ? '✏️ Edit' : '+ Enter splits'}</button></div>
+        ${s ? `${splitBar('Spread bets', h, s.homeBets, a)}${splitBar('Spread money', h, s.homeMoney, a)}${splitBar('Total bets', 'Over', s.overBets, 'Under')}${splitBar('Total money', 'Over', s.overMoney, 'Under')}
+          ${signals.length ? `<ul class="signals">${signals.map((x) => `<li class="sig-${x.type}">${esc(x.text)}</li>`).join('')}</ul>` : '<div class="muted small">No strong signals in these splits.</div>'}
+          <div class="muted small">Entered ${fmtDateTime(s.updatedAt)}</div>`
+        : "<div class=\"muted small\">Bet % and money % aren't available from a free data feed. Copy them from a splits page and the site will flag sharp money, the public side and reverse line movement.</div>"}
+        <div class="split-form" hidden></div>
+      </div>
+      <div class="btn-row" style="margin-top:8px"><a class="btn sm" href="#/market?league=${league}&view=props&game=${encodeURIComponent(g.id)}">🎯 Props${g.propsLoadedAt ? ' ✓' : ''}</a>
+        <button type="button" class="btn sm" data-mk-bet="${esc(g.id)}" data-team="${esc(a)}">+ Bet ${esc(a)}</button><button type="button" class="btn sm" data-mk-bet="${esc(g.id)}" data-team="${esc(h)}">+ Bet ${esc(h)}</button></div>
+    </div>`;
+  }
+
+  const SPLIT_LINKS = [
+    ['VSIN (DraftKings splits)', 'https://data.vsin.com/betting-splits/'],
+    ['Action Network public betting', 'https://www.actionnetwork.com/{league}/public-betting'],
+    ['Covers consensus', 'https://contests.covers.com/consensus/topconsensus/{league}/overall'],
+  ];
+
+  function openSplitsForm(card, g, league) {
+    const box = card.querySelector('.split-form');
+    const s = g.splits || {};
+    const h = g.home.abbr, a = g.away.abbr;
+    box.hidden = false;
+    box.innerHTML = `<form class="form-grid">
+        <div class="field"><label>% of spread <strong>bets</strong> on ${esc(h)}</label><input name="homeBets" type="number" min="0" max="100" value="${esc(s.homeBets ?? '')}" placeholder="e.g. 68"></div>
+        <div class="field"><label>% of spread <strong>money</strong> on ${esc(h)}</label><input name="homeMoney" type="number" min="0" max="100" value="${esc(s.homeMoney ?? '')}" placeholder="e.g. 45"></div>
+        <div class="field"><label>% of total <strong>bets</strong> on the over</label><input name="overBets" type="number" min="0" max="100" value="${esc(s.overBets ?? '')}"></div>
+        <div class="field"><label>% of total <strong>money</strong> on the over</label><input name="overMoney" type="number" min="0" max="100" value="${esc(s.overMoney ?? '')}"></div>
+        <div class="full muted small">Enter the ${esc(h)} (home) side; ${esc(a)} is the rest. Free sources: ${SPLIT_LINKS.map(([n, u]) => `<a href="${u.replace('{league}', league)}" target="_blank" rel="noopener">${esc(n)}</a>`).join(' · ')}</div>
+        <div class="full btn-row"><button class="btn primary" type="submit">Save splits</button><button class="btn" type="button" data-cancel>Cancel</button>${g.splits ? '<button class="btn danger" type="button" data-clear>Clear</button>' : ''}</div>
+      </form>`;
+    const f = box.querySelector('form');
+    f.querySelector('[data-cancel]').addEventListener('click', () => (box.hidden = true));
+    const clear = f.querySelector('[data-clear]');
+    if (clear)
+      clear.addEventListener('click', async () => {
+        await api('DELETE', '/api/splits/' + encodeURIComponent(g.id));
+        g.splits = null;
+        render();
+      });
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const v = (k) => (f[k].value === '' ? '' : Math.max(0, Math.min(100, Number(f[k].value))));
+      g.splits = await api('PUT', '/api/splits/' + encodeURIComponent(g.id), { homeBets: v('homeBets'), homeMoney: v('homeMoney'), overBets: v('overBets'), overMoney: v('overMoney'), matchup: `${a} @ ${h}`, gameDate: g.date });
+      toast('Splits saved');
+      render();
+    });
+  }
+
+  function oddsKeyNote() {
+    return `<div class="card"><h3>🔑 Add a free Odds API key</h3><p>Consensus lines from many sportsbooks, best available prices and player props come from <a href="https://the-odds-api.com" target="_blank" rel="noopener">The Odds API</a>. The free plan includes 500 requests a month, plenty for checking a few games a week.</p>
+      <ol class="phone-steps"><li>Go to <a href="https://the-odds-api.com" target="_blank" rel="noopener">the-odds-api.com</a> and click <strong>Get API Key</strong>, then choose the free plan.</li><li>They email you a key (a long string of letters and numbers).</li><li>Paste it in <a href="#/settings">Settings → Odds data</a>.</li></ol></div>`;
+  }
+
+  function propsViewHtml(league, games, gameId, params, md) {
+    const g = games.find((x) => x.id === gameId) || games[0];
+    if (!g) return '<div class="card empty">No upcoming games.</div>';
+    const entry = state.props[`${league}:${g.id}`];
+    const configured = md && md.data && md.data.odds.configured;
+    const select = `<select id="propGame">${games.map((x) => `<option value="${esc(x.id)}" ${x.id === g.id ? 'selected' : ''}>${esc(x.away.abbr)} @ ${esc(x.home.abbr)} · ${fmtGameTime(x.date)}${x.propsLoadedAt ? ' ✓' : ''}</option>`).join('')}</select>`;
+    if (!configured) return `<div class="filters">${select}</div>${oddsKeyNote()}`;
+    let body;
+    if (!entry || (entry.loading && !entry.data)) {
+      body = entry
+        ? '<div class="empty">Loading prop lines from sportsbooks…</div>'
+        : `<div class="card empty"><p>Prop lines for this game aren't loaded yet.</p><button class="btn primary" id="loadProps">Load props</button><div class="muted small" style="margin-top:6px">Uses about ${league === 'nfl' ? 6 : 5} of your monthly Odds API requests; results are kept for 6 hours.</div></div>`;
+    } else if (entry.error && !entry.data) {
+      body = `<div class="alert error">${esc(entry.error)}</div>`;
+    } else {
+      const cat = params.get('cat') || '';
+      const q = (params.get('q') || '').toLowerCase();
+      const props = entry.data.props.filter((p) => (!cat || p.category === cat) && (!q || p.player.toLowerCase().includes(q)));
+      const cats = [...new Set(entry.data.props.map((p) => p.category))];
+      state.propsShown = props;
+      body = `${entry.error ? `<div class="alert">${esc(entry.error)}</div>` : ''}
+        <div class="filters"><select id="propCat"><option value="">All props</option>${cats.map((c) => `<option ${c === cat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+          <input type="search" id="propSearch" placeholder="Search player…" value="${esc(params.get('q') || '')}">
+          <button class="btn sm" id="refreshProps">↻ Refresh (uses ~${league === 'nfl' ? 6 : 5})</button></div>
+        <div class="muted small" style="margin-bottom:8px">${plural(entry.data.props.length, 'prop')} · updated ${fmtDateTime(entry.data.fetchedAt)}${entry.data.odds && entry.data.odds.remaining != null ? ` · ${entry.data.odds.remaining} Odds API requests left this month` : ''}</div>
+        <div class="table-wrap"><table class="mk-props"><thead><tr><th>Player</th><th>Prop</th><th class="num">Consensus</th><th class="num hide-sm">First seen</th><th>Best over / yes</th><th>Best under / no</th><th class="num hide-sm">Books</th><th></th></tr></thead><tbody>
+        ${props
+          .map(
+            (p, i) => `<tr><td><strong>${esc(p.player)}</strong></td><td>${esc(p.category)}</td>
+            <td class="num">${p.yesNo ? '<span class="muted">yes/no</span>' : p.line ?? '—'}</td>
+            <td class="num hide-sm">${p.firstSeen && p.firstSeen.line != null ? `${p.firstSeen.line}${moveHtml(p.firstSeen.line, p.line)}` : '—'}</td>
+            <td>${p.over ? `${p.over.point != null ? 'o' + p.over.point + ' ' : ''}<strong>${oddsStr(p.over.price)}</strong> <span class="muted small">${esc(p.over.book)}</span>` : '—'}</td>
+            <td>${p.under ? `${p.under.point != null ? 'u' + p.under.point + ' ' : ''}<strong>${oddsStr(p.under.price)}</strong> <span class="muted small">${esc(p.under.book)}</span>` : '—'}</td>
+            <td class="num hide-sm">${p.books}</td>
+            <td><div class="btn-row"><button class="btn sm" data-prop-research="${i}" title="Last 10 games vs this line">🔍</button><button class="btn sm" data-prop-bet="${i}">+ Bet</button></div></td></tr>
+            <tr class="pr-row" hidden><td colspan="8"><div class="pr-slot"></div></td></tr>`
+          )
+          .join('')}</tbody></table></div>`;
+    }
+    return `<div class="filters">${select}</div>${body}`;
+  }
+
+  function trendItemHtml(x, kind) {
+    const gameInfo = x.matchup ? `<span class="muted small">${esc(x.matchup)}${x.gameDate ? ' · ' + fmtGameTime(x.gameDate) : ''}</span>` : '';
+    if (kind === 'team') {
+      const target = x.suggest && x.suggest.side === 'opp' ? x.opp : x.team;
+      let betBtn = '';
+      if (x.suggest && x.suggest.betType === 'Spread') {
+        betBtn = `<button class="btn sm" data-trend-bet="${esc(JSON.stringify({ type: 'Spread', team: target, opp: target === x.team ? x.opp : x.team, gameId: x.gameId }))}">+ Bet ${esc(target)} spread</button>`;
+      } else if (x.suggest && x.suggest.betType === 'Total') {
+        betBtn = `<button class="btn sm" data-trend-bet="${esc(JSON.stringify({ type: 'Total', team: x.team, opp: x.opp, side: x.suggest.side, gameId: x.gameId }))}">+ Bet ${esc(x.suggest.side.toLowerCase())}</button>`;
+      }
+      const tag = { ats: 'ATS', ou: 'O/U', situational: 'Situation' }[x.kind] || '';
+      return `<li class="trend"><div><span class="trend-tag ${esc(x.kind)}">${tag}</span> <strong>${esc(teamName(state.trendSport, x.team))}</strong> ${esc(x.text)}</div><div class="trend-sub">${gameInfo}${betBtn ? `<span class="btn-row">${betBtn}</span>` : ''}</div></li>`;
+    }
+    const hit = (v) => (x.kind === 'propline' ? (x.side === 'Over' ? v > x.line : v < x.line) : v >= x.threshold);
+    const recent = (x.recent || []).map((v) => `<span class="rv ${hit(v) ? 'hit' : 'miss'}">${v}</span>`).join('');
+    const bet = { type: 'Player Prop', ...x.suggest, player: x.player, team: x.team, opp: x.opp, gameId: x.gameId };
+    const research = { player: x.player, team: x.team, opp: x.opp, cat: x.category, line: x.suggest.line, side: x.suggest.side };
+    return `<li class="trend"><div><strong>${esc(x.player)}</strong> <span class="muted small">${esc(x.team)}</span> · ${esc(x.text)}${x.price ? ` <span class="muted small">(best ${oddsStr(x.price.price)} ${esc(x.price.book)})</span>` : ''}</div>
+      <div class="trend-sub"><span class="small">${x.hits}/${x.of} last ${x.of} · avg ${x.avg} · recent ${recent}</span>${gameInfo}
+        <span class="btn-row"><button class="btn sm" data-trend-research="${esc(JSON.stringify(research))}" title="Research">🔍</button><button class="btn sm" data-trend-bet="${esc(JSON.stringify(bet))}">+ Bet</button></span></div></li>`;
+  }
+
+  function streaksViewHtml(league, days, params) {
+    const t = state.trends[`${league}:${days}`];
+    if (!t || (t.status === 'building' && !t.data)) {
+      const p = t && t.progress;
+      return `<div class="card empty"><h3>🔎 Scanning teams and players…</h3>${
+        p && p.total
+          ? `<div class="progress"><div style="width:${Math.round((p.done / p.total) * 100)}%"></div></div><div class="muted small">${p.done} of ${p.total} teams · the first scan takes a few minutes; after that it's quick</div>`
+          : '<div class="muted small">Starting…</div>'
+      }</div>`;
+    }
+    if (t.status === 'error' && !t.data) return `<div class="alert error">${esc(t.error)}</div>`;
+    const d = t.data;
+    state.trendSport = league.toUpperCase();
+    const cat = params.get('cat') || '';
+    const players = d.players.filter((x) => !cat || x.category === cat);
+    const cats = [...new Set(d.players.map((x) => x.category))];
+    const situ = d.teams.filter((x) => x.kind === 'situational');
+    const atsou = d.teams.filter((x) => x.kind !== 'situational');
+    return `${t.status === 'building' ? '<div class="alert small">Refreshing in the background…</div>' : ''}
+      <div class="alert small">Streaks describe the past, and sportsbooks know about them too. Use them as a starting point for research, not as sure things.</div>
+      <div class="grid cols-2">
+        <div class="card"><h2>📈 Team streaks</h2>${atsou.length ? `<ul class="trends">${atsou.slice(0, 25).map((x) => trendItemHtml(x, 'team')).join('')}</ul>` : "<div class=\"muted\">No notable streaks for this week's teams.</div>"}</div>
+        <div class="card"><h2>🌙 Situational spots this week</h2><div class="muted small" style="margin:-6px 0 8px">Records in the exact situation each team is in this week (night game, home/road, favorite/underdog).</div>${situ.length ? `<ul class="trends">${situ.slice(0, 25).map((x) => trendItemHtml(x, 'team')).join('')}</ul>` : '<div class="muted">Nothing stands out.</div>'}</div>
+      </div>
+      <div class="card section"><h2>🎯 Player streaks vs this week's lines</h2>
+        ${d.propLines.length ? `<ul class="trends">${d.propLines.slice(0, 30).map((x) => trendItemHtml(x, 'player')).join('')}</ul>` : `<div class="muted">${d.propsAvailable ? 'No players are on a run against the current lines.' : 'Load props for a game in the <strong>Props</strong> view to compare players with the real lines.'}</div>`}</div>
+      <div class="card section"><div class="card-head"><h2>🔥 Player milestone streaks</h2><select id="streakCat"><option value="">All categories</option>${cats.map((c) => `<option ${c === cat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
+        ${players.length ? `<ul class="trends">${players.slice(0, 60).map((x) => trendItemHtml(x, 'player')).join('')}</ul>` : '<div class="muted">No current streaks found.</div>'}</div>
+      <p class="muted small">Scanned ${plural(d.games, 'upcoming game')} · built ${fmtDateTime(d.builtAt)} · <button class="btn sm" id="rebuildTrends">↻ Rescan</button> · Source: ESPN box scores and closing lines.</p>`;
+  }
+
+  let trendsPoll = null;
+  async function pollTrends(league, days, refresh) {
+    clearTimeout(trendsPoll);
+    trendsPoll = true;
+    try {
+      state.trends[`${league}:${days}`] = await api('GET', `/api/trends/${league}?days=${days}${refresh ? '&refresh=1' : ''}`);
+    } catch (err) {
+      state.trends[`${league}:${days}`] = { status: 'error', error: err.message };
+    }
+    const { parts, params } = parseHash();
+    const stillHere = parts[0] === 'market' && params.get('view') === 'streaks';
+    if (stillHere) quietRender();
+    trendsPoll = state.trends[`${league}:${days}`].status === 'building' && stillHere ? setTimeout(() => pollTrends(league, days), 3000) : null;
+  }
+
+  function openResearchModal(q) {
+    modalForm.innerHTML = `<div class="card-head"><h2 style="margin:0">🔍 Prop research</h2><button type="button" class="btn sm" data-close>Close</button></div><div id="rmOut"></div>`;
+    modalForm.onsubmit = (e) => e.preventDefault();
+    wireModalClose();
+    modal.showModal();
+    showResearch(modalForm.querySelector('#rmOut'), q);
+  }
+
+  function marketBet(spec, games, sport) {
+    const g = games.find((x) => x.id === spec.gameId) || {};
+    const base = { sport, date: g.date ? gameDateOnly(g.date) : today() };
+    if (spec.type === 'Spread') return openBetForm({ ...base, betType: 'Spread', team: spec.team, opponent: spec.opp, line: g.spread ? lineFor(spec.team, g) : '' });
+    if (spec.type === 'Total') return openBetForm({ ...base, betType: 'Total', team: spec.team, opponent: spec.opp, side: spec.side, line: g.overUnder ?? '' });
+    return openBetForm({ ...base, betType: 'Player Prop', player: spec.player, team: spec.team || '', opponent: spec.opp || '', propCategory: spec.propCategory, side: spec.side, line: spec.line ?? '', odds: spec.odds ?? -110 });
+  }
+
+  function renderMarket(_, params) {
+    const league = params.get('league') === 'nba' ? 'nba' : 'nfl';
+    const sport = league.toUpperCase();
+    const view = params.get('view') || 'lines';
+    const days = Number(params.get('days')) || (league === 'nfl' ? 7 : 2);
+    const key = `${league}:${days}`;
+    const md = state.market[key];
+    if (!md) loadMarket(league, days).then(quietRender);
+    const games = (md && md.data && md.data.games) || [];
+    const setParam = (k, v) => {
+      const p = new URLSearchParams(params);
+      if (v) p.set(k, v);
+      else p.delete(k);
+      if (k !== 'cat' && k !== 'q') {
+        p.delete('cat');
+        p.delete('q');
+      }
+      location.hash = '#/market?' + p;
+    };
+
+    let body;
+    if (view === 'streaks') {
+      const t = state.trends[key];
+      if ((!t || t.status === 'building') && !trendsPoll) pollTrends(league, days);
+      body = streaksViewHtml(league, days, params);
+    } else if (!md || (md.loading && !md.data)) {
+      body = '<div class="empty">Loading lines…</div>';
+    } else if (md.error && !md.data) {
+      body = `<div class="alert error">${esc(md.error)}</div>`;
+    } else if (view === 'props') {
+      body = propsViewHtml(league, games, params.get('game'), params, md);
+    } else {
+      const o = md.data.odds;
+      body = `${
+        o.configured
+          ? `<div class="muted small" style="margin-bottom:10px">Consensus from The Odds API${o.fetchedAt ? ` · updated ${fmtDateTime(o.fetchedAt)}` : ''}${o.remaining != null ? ` · ${o.remaining} requests left this month` : ''} · <button class="btn sm" id="refreshOdds">↻ Refresh odds (uses 3)</button>${o.error ? ` <span class="neg">${esc(o.error)}</span>` : ''}</div>`
+          : oddsKeyNote()
+      }
+        <div class="muted small" style="margin-bottom:10px">"Open" is the opening line from ESPN when it provides one; otherwise it's the line the first time this site saw the game. Spreads are shown from the home team's side.</div>
+        ${games.length ? games.map((g) => marketGameHtml(g, league)).join('') : `<div class="card empty">No upcoming ${sport} games in the next ${plural(days, 'day')}.</div>`}`;
+    }
+
+    app.innerHTML = `
+      <div class="page-head"><div><h1>Market</h1><div class="muted">Line movement, public betting splits, prop consensus and streaks.</div></div>
+        <div class="btn-row"><div class="tabs" id="leagueTabs">${['nfl', 'nba'].map((l) => `<button data-v="${l}" class="${l === league ? 'active' : ''}">${l.toUpperCase()}</button>`).join('')}</div>
+        <select id="mkDays">${(league === 'nfl' ? [[7, 'Next 7 days'], [14, 'Next 14 days']] : [[1, 'Today'], [2, 'Next 2 days'], [3, 'Next 3 days']]).map(([v, l]) => `<option value="${v}" ${v === days ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div>
+      <div class="tabs subtabs" id="mkViews">${[['lines', '📈 Lines & splits'], ['props', '🎯 Props'], ['streaks', '🔥 Streaks']].map(([v, l]) => `<button data-v="${v}" class="${v === view ? 'active' : ''}">${l}</button>`).join('')}</div>
+      <div class="section">${body}</div>`;
+
+    app.querySelectorAll('#leagueTabs button').forEach((b) => b.addEventListener('click', () => (location.hash = `#/market?league=${b.dataset.v}${view !== 'lines' ? '&view=' + view : ''}`)));
+    app.querySelectorAll('#mkViews button').forEach((b) => b.addEventListener('click', () => setParam('view', b.dataset.v === 'lines' ? '' : b.dataset.v)));
+    app.querySelector('#mkDays').addEventListener('change', (e) => setParam('days', e.target.value));
+    const ro = app.querySelector('#refreshOdds');
+    if (ro)
+      ro.addEventListener('click', async () => {
+        ro.disabled = true;
+        await loadMarket(league, days, true);
+        render();
+      });
+    app.querySelectorAll('[data-edit-splits]').forEach((b) =>
+      b.addEventListener('click', () => openSplitsForm(b.closest('.mk-game'), games.find((g) => g.id === b.dataset.editSplits), league))
+    );
+    app.querySelectorAll('[data-mk-bet]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const g = games.find((x) => x.id === b.dataset.mkBet);
+        marketBet({ type: 'Spread', team: b.dataset.team, opp: b.dataset.team === g.home.abbr ? g.away.abbr : g.home.abbr, gameId: g.id }, games, sport);
+      })
+    );
+
+    // props view
+    const pg = app.querySelector('#propGame');
+    if (pg) pg.addEventListener('change', () => setParam('game', pg.value));
+    const currentGame = () => (pg ? pg.value : null);
+    const lp = app.querySelector('#loadProps');
+    if (lp)
+      lp.addEventListener('click', () => {
+        loadProps(league, currentGame()).then(() => render());
+        render();
+      });
+    const rp = app.querySelector('#refreshProps');
+    if (rp) rp.addEventListener('click', () => loadProps(league, currentGame(), true).then(() => render()));
+    const pc = app.querySelector('#propCat');
+    if (pc) pc.addEventListener('change', () => setParam('cat', pc.value));
+    const ps = app.querySelector('#propSearch');
+    if (ps) {
+      let t;
+      ps.addEventListener('input', () => {
+        clearTimeout(t);
+        t = setTimeout(() => {
+          const p = new URLSearchParams(params);
+          if (ps.value) p.set('q', ps.value);
+          else p.delete('q');
+          history.replaceState(null, '', '#/market?' + p);
+          render();
+          const el = app.querySelector('#propSearch');
+          el.focus();
+          el.setSelectionRange(el.value.length, el.value.length);
+        }, 250);
+      });
+    }
+    app.querySelectorAll('[data-prop-research]').forEach((b) =>
+      b.addEventListener('click', async () => {
+        const p = state.propsShown[Number(b.dataset.propResearch)];
+        const row = b.closest('tr').nextElementSibling;
+        row.hidden = !row.hidden;
+        if (row.hidden) return;
+        const slot = row.querySelector('.pr-slot');
+        const side = p.yesNo ? 'Yes' : 'Over';
+        slot.innerHTML = '<div class="muted small">Looking up recent games…</div>';
+        // the props feed doesn't say which team the player is on, so try both
+        for (const [i, team] of p.teams.entries()) {
+          try {
+            const d = await loadResearch({ sport, team, player: p.player, prop: p.category, line: p.line ?? '', side, opp: p.teams[1 - i] });
+            p.team = team;
+            slot.innerHTML = researchHtml(d);
+            return;
+          } catch (err) {
+            if (i === p.teams.length - 1) slot.innerHTML = `<div class="alert small">${esc(err.message)}</div>`;
+          }
+        }
+      })
+    );
+    app.querySelectorAll('[data-prop-bet]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const p = state.propsShown[Number(b.dataset.propBet)];
+        const g = games.find((x) => x.id === currentGame()) || {};
+        marketBet({ type: 'Player Prop', player: p.player, team: p.team || '', opp: p.team ? p.teams.find((t) => t !== p.team) : '', propCategory: p.category, side: p.yesNo ? 'Yes' : 'Over', line: p.line ?? '', odds: p.over ? p.over.price : -110, gameId: g.id }, games, sport);
+      })
+    );
+
+    // streaks view
+    const sc = app.querySelector('#streakCat');
+    if (sc) sc.addEventListener('change', () => setParam('cat', sc.value));
+    const rb = app.querySelector('#rebuildTrends');
+    if (rb) rb.addEventListener('click', () => pollTrends(league, days, true));
+    app.querySelectorAll('[data-trend-bet]').forEach((b) => b.addEventListener('click', () => marketBet(JSON.parse(b.dataset.trendBet), games, sport)));
+    app.querySelectorAll('[data-trend-research]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const x = JSON.parse(b.dataset.trendResearch);
+        openResearchModal({ sport, team: x.team, player: x.player, prop: x.cat, line: x.line ?? '', side: x.side, opp: x.opp });
+      })
+    );
+  }
+
   // ---------- notes ----------
 
   function renderNotes(_, params) {
@@ -1760,6 +2162,9 @@
       <div class="page-head"><div><h1>Settings & backup</h1><div class="muted">Your data is stored on this computer in <code>data/db.json</code>.</div></div></div>
       <div class="card" id="phoneCard"><h2>📱 Phone access</h2><div class="muted">Loading…</div></div>
       ${bankrollCardHtml()}
+      <div class="card" id="oddsKeyCard"><h2>🔑 Odds data</h2>
+        <p class="muted small" style="margin-top:0">A free key from <a href="https://the-odds-api.com" target="_blank" rel="noopener">The Odds API</a> adds consensus lines, best prices and player props to the Market tab (500 free requests a month).</p>
+        <form id="oddsKeyForm" class="btn-row"><input name="key" type="password" autocomplete="off" placeholder="Paste your Odds API key" value="${esc((state.settings || {}).oddsApiKey || '')}" style="flex:1;min-width:200px"><button class="btn primary" type="submit">Save key</button></form></div>
       ${updatesCardHtml()}
       <div class="grid cols-2 section">
         <div class="card"><h2>Export</h2><p class="muted">Download everything (bets, notes, team notes) as JSON, or your bets as a CSV spreadsheet.</p>
@@ -1773,6 +2178,12 @@
         <dt>Team notes</dt><dd>${state.teamNotes.reduce((n, t) => n + (t.entries || []).length, 0)}</dd></dl></div>`;
     document.getElementById('csvBtn').addEventListener('click', downloadCsv);
     renderPhoneCard();
+    document.getElementById('oddsKeyForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      await saveSettings({ oddsApiKey: e.target.key.value.trim() });
+      state.market = {};
+      toast(e.target.key.value.trim() ? 'Odds API key saved' : 'Odds API key removed');
+    });
     document.getElementById('bankrollForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const f = e.target;

@@ -885,6 +885,7 @@
     app.innerHTML = `
       <div class="page-head"><div><a href="#/teams" class="small">← Teams</a><h1>${esc(name)}</h1><div class="muted">${esc(sport)} · ${esc(abbr)}</div></div>
         <button class="btn primary" id="betOnTeam">+ Bet on ${esc(name)}</button></div>
+      ${['NFL', 'NBA'].includes(sport) ? `<div class="card sm-card">${statmuseBox(sport, `e.g. ${name.split(' ').pop()} record after a loss`)}${statmuseLinks(sport, [`${name} record this season`, `${name} points per game last 5 games`, `${name} points allowed per game last 5 games`], 'Or try')}</div>` : ''}
       ${tilesHtml(s, `<div class="tile"><div class="label">Betting against</div><div class="value">${record(sa)}</div><div class="sub">${plHtml(sa.profit)} · ${pct(sa.winRate)}</div></div>`)}
       <div class="grid cols-2">
         <div class="card" id="teamNotes"><div class="card-head"><h2>Team notes</h2><span class="muted small">${plural(((doc && doc.entries) || []).length, 'note')}</span></div>
@@ -1258,6 +1259,7 @@
             <div class="h2h-body">${state.h2hOpen.has(`${league}:${g.a}:${g.h}`) ? h2hHtml(league, g.a, g.h, g.overUnder) : ''}</div>
           </details>
           ${my.length ? `<div class="game-mybets">📌 You have ${plural(my.length, 'pending pick')} on this game: ${my.map((x) => `<a href="#/bet/${encodeURIComponent((x.parlay || x).id)}">${esc(betTitle(x))}${x.parlay ? ' (parlay leg)' : ''}</a>`).join(', ')}</div>` : ''}
+          ${statmuseLinks(sport, [`${teamName(sport, g.a)} vs ${teamName(sport, g.h)} last 10 games`, `${teamName(sport, g.a)} record on the road this season`, `${teamName(sport, g.h)} record at home this season`])}
           <div class="btn-row game-actions">
             <button class="btn sm primary" data-niche="${esc(g.id)}">📊 Niche Stats</button>
             <button class="btn sm" data-bet-game="${esc(g.id)}" data-team="${esc(g.a)}" data-opp="${esc(g.h)}" data-date="${esc(g.date)}">+ Bet ${esc(g.a)}</button>
@@ -1294,6 +1296,7 @@
         <label class="btn-row" style="margin:0;color:var(--text)"><input type="checkbox" name="all" value="1" ${showAll ? 'checked' : ''} style="width:auto"> Show all injuries</label>
         <label class="btn-row" style="margin:0;color:var(--text)"><input type="checkbox" name="mine" value="1" ${mine ? 'checked' : ''} style="width:auto"> Only games I've bet on</label>
       </form>
+      ${statmuseBox(sport, sport === 'NFL' ? 'e.g. Chiefs record in primetime games' : 'e.g. Celtics record on the second night of back-to-backs')}
       ${body}`;
 
     const form = document.getElementById('mFilters');
@@ -1976,9 +1979,10 @@
         // the props feed doesn't say which team the player is on, so try both
         for (const [i, team] of p.teams.entries()) {
           try {
-            const d = await loadResearch({ sport, team, player: p.player, prop: p.category, line: p.line ?? '', side, opp: p.teams[1 - i] });
+            const rq = { sport, team, player: p.player, prop: p.category, line: p.line ?? '', side, opp: p.teams[1 - i] };
+            const d = await loadResearch(rq);
             p.team = team;
-            slot.innerHTML = researchHtml(d);
+            slot.innerHTML = researchHtml(d, rq);
             return;
           } catch (err) {
             if (i === p.teams.length - 1) slot.innerHTML = `<div class="alert small">${esc(err.message)}</div>`;
@@ -2009,6 +2013,33 @@
   }
 
   // ---------- notes ----------
+
+  // ---------- StatMuse ----------
+  // StatMuse has no public API, so BetsFriend opens it with the question filled in.
+  const STATMUSE_WORDS = [[/['’]/g, ''], [/\banytime td\b/gi, 'touchdowns'], [/\bpts\b/gi, 'points'], [/\breb\b/gi, 'rebounds'], [/\bast\b/gi, 'assists'], [/\brec\b/gi, 'receiving'], [/\brush\b/gi, 'rushing'],
+    [/\btds\b/gi, 'touchdowns'], [/\btd\b/gi, 'touchdown'], [/3-pointers made/gi, 'threes made'], [/\s*\+\s*/g, ' and ']];
+  function statmuseUrl(sport, question) {
+    let q = String(question);
+    for (const [re, w] of STATMUSE_WORDS) q = q.replace(re, w);
+    const slug = q.toLowerCase().replace(/[^a-z0-9.\s-]/g, ' ').trim().replace(/\s+/g, '-');
+    const league = ['NFL', 'NBA'].includes(sport) ? `${sport.toLowerCase()}/` : '';
+    return `https://www.statmuse.com/${league}ask/${slug}`;
+  }
+  const statmuseLinks = (sport, questions, label = 'Ask StatMuse') =>
+    `<div class="sm-links"><span class="sm-label">${esc(label)}</span>${questions
+      .filter(Boolean)
+      .map((q) => `<a href="${esc(statmuseUrl(sport, q))}" target="_blank" rel="noopener" class="sm-link">${esc(q)}</a>`)
+      .join('')}</div>`;
+  const statmuseBox = (sport, placeholder) =>
+    `<form class="sm-ask" data-sport="${esc(sport)}" role="search"><label for="smq-${esc(sport)}" class="sm-label">Ask StatMuse</label>
+      <input id="smq-${esc(sport)}" name="q" type="search" autocomplete="off" placeholder="${esc(placeholder)}"><button class="btn" type="submit">Ask</button></form>`;
+  document.addEventListener('submit', (e) => {
+    const f = e.target.closest && e.target.closest('form.sm-ask');
+    if (!f) return;
+    e.preventDefault();
+    const q = f.q.value.trim();
+    if (q) window.open(statmuseUrl(f.dataset.sport, q), '_blank', 'noopener');
+  });
 
   // ---------- rankings ----------
 
@@ -2061,7 +2092,8 @@
       d ? `NFL ${d.season} regular season · ${plural(d.games, 'game')} played${d.currentSeason ? '' : ' · the new season hasn’t started, so this is last season'}` : 'NFL standings, team rankings and games that skew the averages.'
     }</div></div>
       <button class="btn" id="rkRefresh" ${r && r.status === 'building' ? 'disabled' : ''}>↻ Refresh</button></div>
-      <div class="tabs subtabs" id="rkTabs">${tabs.map(([v, l]) => `<button data-v="${v}" class="${v === view ? 'active' : ''}">${l}</button>`).join('')}</div>`;
+      <div class="tabs subtabs" id="rkTabs">${tabs.map(([v, l]) => `<button data-v="${v}" class="${v === view ? 'active' : ''}">${l}</button>`).join('')}</div>
+      ${statmuseBox('NFL', 'e.g. most sacks by a defense this season')}`;
 
     let body;
     if (!r || (r.status === 'building' && !d)) {
@@ -2208,7 +2240,8 @@
         <div class="rk-out-title">${esc(t.title)}</div>
         <p>${t.body}</p>
         <p class="rk-out-effect">${t.effect}</p>
-        <div class="btn-row"><a class="btn sm" href="#/team/NFL/${encodeURIComponent(o.team)}">${esc(nflName(o.team))} page</a></div></li>`;
+        <div class="btn-row"><a class="btn sm" href="#/team/NFL/${encodeURIComponent(o.team)}">${esc(nflName(o.team))} page</a>
+          <a class="btn sm" target="_blank" rel="noopener" href="${esc(statmuseUrl('NFL', `${nflName(o.team)} ${o.what} by game this season`))}">Game by game on StatMuse</a></div></li>`;
     };
     return `<div class="rk-chips section">${chip('', 'All')}${chip('def', 'Defense')}${chip('off', 'Offense')}${team ? `<span class="chip">${esc(nflName(team))} <a href="#/rankings?view=outliers" aria-label="Show all teams" style="margin-left:6px">×</a></span>` : ''}</div>
       <p class="muted" style="max-width:70ch">Games that sit far from a team's other results and move its season average. A defense that allowed 3 points once but 28+ every other week looks better on paper than it plays. Check who the opponent was, and whether starters, weather or a blowout explain it.</p>
@@ -2825,7 +2858,7 @@
     return researchCache[key];
   }
 
-  function researchHtml(d) {
+  function researchHtml(d, q = {}) {
     const s = d.summary;
     const side = d.side === 'Under' || d.side === 'No' ? d.side : 'Over';
     const played = d.games.filter((g) => !g.dnp).slice().reverse(); // oldest -> newest for the chart
@@ -2845,13 +2878,14 @@
         ${d.line != null ? `<div class="pr-line" style="bottom:${18 + (d.line / max) * 105.6}px"><span>${esc(d.line)}</span></div>` : ''}
         ${bars}</div>` : ''}
       ${d.vsOpp.length ? `<div class="small" style="margin-top:6px">vs this opponent: ${d.vsOpp.map((g) => `<strong>${g.value}</strong> <span class="muted">(${esc(fmtDate(g.date.slice(0, 10)))})</span>`).join(', ')}</div>` : ''}
-      <div class="muted small" style="margin-top:4px">Last ${plural(played.length, 'game')} played, oldest to newest. Source: ESPN box scores.</div></div>`;
+      <div class="muted small" style="margin-top:4px">Last ${plural(played.length, 'game')} played, oldest to newest. Source: ESPN box scores.</div>
+      ${statmuseLinks(q.sport, [`${d.player} ${d.prop} last 10 games`, q.opp ? `${d.player} ${d.prop} vs ${teamName(q.sport, q.opp)}` : '', `${d.player} ${d.prop} this season`])}</div>`;
   }
 
   async function showResearch(el, q) {
     el.innerHTML = '<div class="muted small">Looking up recent games… (first time can take ~15 seconds)</div>';
     try {
-      el.innerHTML = researchHtml(await loadResearch(q));
+      el.innerHTML = researchHtml(await loadResearch(q), q);
     } catch (err) {
       el.innerHTML = `<div class="alert small">${esc(err.message)}</div>`;
     }

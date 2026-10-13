@@ -667,3 +667,13 @@ dialog.wide { width: min(980px, calc(100vw - 24px)); }
 @container (max-width: 640px) { .rk-standings .rk-pfpa { display: none; } }
 .tabs.subtabs { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
 .tabs.subtabs button { white-space: nowrap; }
+
+/* ---------- StatMuse ---------- */
+.sm-ask { display: flex; align-items: center; gap: 8px; margin: 14px 0 0; max-width: 640px; }
+.sm-ask input { flex: 1; }
+.sm-label { font-size: .82rem; font-weight: 600; color: var(--text-2); white-space: nowrap; margin: 0; }
+.sm-links { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: .84rem; margin-top: 8px; }
+.sm-link::after { content: " ↗"; font-size: .85em; }
+.sm-card { margin-bottom: 20px; }
+.sm-card .sm-ask { margin-top: 0; max-width: none; }
+@media (max-width: 640px) { .sm-ask { flex-wrap: wrap; } .sm-ask .sm-label { flex-basis: 100%; } }

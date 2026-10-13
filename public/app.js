@@ -1,4 +1,4 @@
-/* BetSite frontend — vanilla JS single-page app with hash routing. */
+/* BetsFriend frontend — vanilla JS single-page app with hash routing. */
 (function () {
   'use strict';
 
@@ -2129,7 +2129,7 @@
     }
     if (!el.isConnected) return;
     if (!st.local) {
-      el.innerHTML = `<h2>📱 Phone access</h2><p>You're signed in on this device. Password changes can only be made on the computer running BetSite.</p><button class="btn" id="signOut">Sign out of this device</button>`;
+      el.innerHTML = `<h2>📱 Phone access</h2><p>You're signed in on this device. Password changes can only be made on the computer running BetsFriend.</p><button class="btn" id="signOut">Sign out of this device</button>`;
       el.querySelector('#signOut').addEventListener('click', async () => {
         await api('POST', '/api/auth/logout');
         location.href = '/login';
@@ -2146,11 +2146,11 @@
            <ol class="phone-steps">
              <li>Connect your phone to the <strong>same Wi-Fi</strong> as this computer.</li>
              <li>On your phone, open Safari or Chrome and go to ${wifi.length ? urlList(wifi) : named ? urlList([named]) : "this computer's address"}${wifi.length && named ? ` <span class="muted small">(or ${esc(named.url)})</span>` : ''}.</li>
-             <li>Enter your password. Then tap <strong>Share → Add to Home Screen</strong> to get a BetSite app icon.</li>
+             <li>Enter your password. Then tap <strong>Share → Add to Home Screen</strong> to get a BetsFriend app icon.</li>
            </ol>
            ${ts.length ? `<p class="small">🌍 Away from home (Tailscale): ${urlList(ts)}</p>` : '<p class="muted small">🌍 Want it away from home too? Install the free Tailscale app on this computer and your phone (same account), then reload this page to see a second address that works anywhere.</p>'}
-           <p class="muted small">This computer must be on and running BetSite (the Terminal window open) for your phone to reach it.</p>`
-        : '<p style="margin-top:0">Set a password to use BetSite from your phone. Until then, only this computer can open it.</p>'}
+           <p class="muted small">This computer must be on and running BetsFriend (the Terminal window open) for your phone to reach it.</p>`
+        : '<p style="margin-top:0">Set a password to use BetsFriend from your phone. Until then, only this computer can open it.</p>'}
       <form id="pwForm" class="form-grid">
         <div class="field"><label>${st.passwordSet ? 'New password' : 'Password'}</label><input name="pw" type="password" minlength="6" autocomplete="new-password" required></div>
         <div class="field"><label>Type it again</label><input name="pw2" type="password" minlength="6" autocomplete="new-password" required></div>
@@ -2226,7 +2226,7 @@
       ${updatesCardHtml()}
       <div class="grid cols-2 section">
         <div class="card"><h2>Export</h2><p class="muted">Download everything (bets, notes, team notes) as JSON, or your bets as a CSV spreadsheet.</p>
-          <div class="btn-row"><a class="btn primary" href="/api/export" download="betsite-backup.json">Download JSON backup</a><button class="btn" id="csvBtn">Download bets CSV</button></div></div>
+          <div class="btn-row"><a class="btn primary" href="/api/export" download="betsfriend-backup.json">Download JSON backup</a><button class="btn" id="csvBtn">Download bets CSV</button></div></div>
         <div class="card"><h2>Import</h2><p class="muted">Restore from a JSON backup. <strong>This replaces all current data.</strong></p>
           <input type="file" id="importFile" accept="application/json,.json"></div>
       </div>
@@ -2816,9 +2816,9 @@ Wager: $55.00   To Win: $50.00">${esc(text)}</textarea>
     }
     const first = u.changes[0];
     el.innerHTML = u.unknown
-      ? `<span>🔄 <strong>Turn on one-click updates:</strong> install the latest version of BetSite once. Your bets are kept.</span>
+      ? `<span>🔄 <strong>Turn on one-click updates:</strong> install the latest version of BetsFriend once. Your bets are kept.</span>
          <span class="btn-row"><button class="btn sm primary" data-update-now>Install latest</button><button class="btn sm" data-update-later>Later</button></span>`
-      : `<span>🎉 <strong>New version of BetSite available</strong>${first ? `: ${esc(first.message)}${u.changes.length > 1 ? ` <span class="muted">(+${u.changes.length - 1} more)</span>` : ''}` : ''}</span>
+      : `<span>🎉 <strong>New version of BetsFriend available</strong>${first ? `: ${esc(first.message)}${u.changes.length > 1 ? ` <span class="muted">(+${u.changes.length - 1} more)</span>` : ''}` : ''}</span>
          <span class="btn-row"><a class="btn sm" href="#/settings">What's new</a><button class="btn sm primary" data-update-now>Update now</button><button class="btn sm" data-update-later>Later</button></span>`;
     el.hidden = false;
     el.querySelector('[data-update-now]').addEventListener('click', installUpdate);
@@ -2831,7 +2831,7 @@ Wager: $55.00   To Win: $50.00">${esc(text)}</textarea>
   async function installUpdate() {
     const u = state.update;
     if (!u) return;
-    if (!confirm('Install the latest version of BetSite now?\n\nYour bets and notes are kept, and a backup copy is saved first.')) return;
+    if (!confirm('Install the latest version of BetsFriend now?\n\nYour bets and notes are kept, and a backup copy is saved first.')) return;
     let before = null;
     try {
       before = (await api('GET', '/api/version')).boot;
@@ -2846,10 +2846,10 @@ Wager: $55.00   To Win: $50.00">${esc(text)}</textarea>
       return;
     }
     if (!res.restarting) {
-      showOverlay('Almost done: restart BetSite', 'The new version is installed. In Terminal, press <strong>Control + C</strong>, then run <code>npm start</code> again and reload this page. After this one time, updates will restart on their own.', true);
+      showOverlay('Almost done: restart BetsFriend', 'The new version is installed. In Terminal, press <strong>Control + C</strong>, then run <code>npm start</code> again and reload this page. After this one time, updates will restart on their own.', true);
       return;
     }
-    showOverlay('Restarting BetSite…', 'This only takes a few seconds. The page will reload by itself.');
+    showOverlay('Restarting BetsFriend…', 'This only takes a few seconds. The page will reload by itself.');
     const deadline = Date.now() + 60000;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 1000));
@@ -2863,7 +2863,7 @@ Wager: $55.00   To Win: $50.00">${esc(text)}</textarea>
         /* server is restarting */
       }
     }
-    showOverlay('Update installed', "BetSite didn't come back by itself. In Terminal, press <strong>Control + C</strong>, run <code>npm start</code>, then reload this page.", true);
+    showOverlay('Update installed', "BetsFriend didn't come back by itself. In Terminal, press <strong>Control + C</strong>, run <code>npm start</code>, then reload this page.", true);
   }
 
   // ---------- auto-refresh ----------
@@ -2946,6 +2946,6 @@ Wager: $55.00   To Win: $50.00">${esc(text)}</textarea>
       setInterval(() => !document.hidden && runAutoSettle({ quiet: true }), 30 * 60 * 1000);
     })
     .catch((err) => {
-      app.innerHTML = `<div class="alert error">Could not reach the BetSite server: ${esc(err.message)}</div>`;
+      app.innerHTML = `<div class="alert error">Could not reach the BetsFriend server: ${esc(err.message)}</div>`;
     });
 })();

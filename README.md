@@ -1,4 +1,4 @@
-# 🎯 BetSite: Sports Betting Tracker
+# 🎯 BetsFriend: Sports Betting Tracker
 
 A personal website for tracking your sports bets: picks, money placed, wins and losses, success rate by prop type and by team, live NFL and NBA injury reports, and notes everywhere.
 
@@ -19,7 +19,7 @@ A personal website for tracking your sports bets: picks, money placed, wins and 
 - **Suggested bet sizes**: set a bankroll and unit size in Settings. The bet form then offers 0.5/1/2/3-unit buttons, an optional quarter-Kelly size from your own win estimate, and a warning when a bet is above your limit.
 - **Game weather** (NFL): forecast at kickoff for outdoor stadiums (temperature, wind, gusts, chance of rain or snow) from Open-Meteo, with flags for wind, rain, snow, freezing and heat. Domes show as indoors, retractable roofs are noted, and neutral-site games are skipped.
 - **Bet slip import**: paste the confirmation text from your sportsbook. The site reads the book, stake, odds, date and selections, including parlay legs, alternate lines and yes/no props, and pre-fills the bet form for you to check.
-- **Phone access**: the computer running BetSite never needs a password. Other devices are blocked until you set one in **Settings → Phone access**, then sign in once; the login lasts 90 days and is limited to 10 tries per 15 minutes. Settings shows the address to open on your phone on the same Wi-Fi. For access away from home, Tailscale works without opening your network to the internet.
+- **Phone access**: the computer running BetsFriend never needs a password. Other devices are blocked until you set one in **Settings → Phone access**, then sign in once; the login lasts 90 days and is limited to 10 tries per 15 minutes. Settings shows the address to open on your phone on the same Wi-Fi. For access away from home, Tailscale works without opening your network to the internet.
 - **Market** tab:
   - **Lines & splits**: every upcoming game with the opening line (from ESPN when available, otherwise the first line this site saw), the current line and how it has moved. With a free The Odds API key you also get the consensus across sportsbooks and the best available price per side. Enter public bet % and money % per game, or use **📋 Paste splits for all games**: paste a page or article (SportsBettingDime, VSIN, Action Network…) and the site reads every game's percentages from sentences or tables, for you to review before saving. Pasted or typed in, and the site flags bigger bets against the public, the public side and reverse line movement.
   - **Props**: with an Odds API key, consensus prop lines, best over/under prices and books, and how each line has moved since this site first saw it. Each prop has 🔍 research (last 10 games vs the line) and a + Bet button. Loading props for a game uses about 6 of the 500 free monthly requests and is cached for 6 hours.
@@ -40,7 +40,7 @@ You need [Node.js](https://nodejs.org) 18 or newer. There are no dependencies to
 
 ```bash
 npm start
-# → BetSite running at http://localhost:3000
+# → BetsFriend running at http://localhost:3000
 ```
 
 Open http://localhost:3000 in your browser.

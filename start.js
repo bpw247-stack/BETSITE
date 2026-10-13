@@ -16,7 +16,7 @@ function run() {
   });
   child.on('exit', (code, signal) => {
     if (code === RESTART_CODE) {
-      console.log('\n↻ Restarting BetSite with the new version…\n');
+      console.log('\n↻ Restarting BetsFriend with the new version…\n');
       return run();
     }
     process.exit(code == null ? (signal ? 1 : 0) : code);

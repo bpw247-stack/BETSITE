@@ -1,6 +1,6 @@
 'use strict';
 
-// BetSite server: zero-dependency Node HTTP server.
+// BetsFriend server: zero-dependency Node HTTP server.
 // - Serves the static frontend from ./public
 // - Stores bets, general notes and team notes in ./data/db.json
 // - Proxies (and caches) NFL/NBA injury reports from ESPN's public API
@@ -136,7 +136,7 @@ async function getInjuries(league, force) {
   const cached = injuryCache[league];
   if (!force && cached && Date.now() - cached.at < INJURY_TTL_MS) return { ...cached.data, cached: true };
   const url = `https://site.api.espn.com/apis/site/v2/sports/${LEAGUE_PATHS[league]}/injuries`;
-  const r = await fetch(url, { headers: { 'User-Agent': 'BetSite/1.0' }, signal: AbortSignal.timeout(15000) });
+  const r = await fetch(url, { headers: { 'User-Agent': 'BetsFriend/1.0' }, signal: AbortSignal.timeout(15000) });
   if (!r.ok) throw new Error(`ESPN responded ${r.status}`);
   const data = { league, fetchedAt: new Date().toISOString(), teams: parseEspnInjuries(await r.json()) };
   injuryCache[league] = { at: Date.now(), data };
@@ -192,7 +192,7 @@ const summaryCache = new Map(); // event id -> parsed summary (finished games ne
 
 async function espnJson(league, pathAndQuery) {
   const url = `https://site.api.espn.com/apis/site/v2/sports/${LEAGUE_PATHS[league]}/${pathAndQuery}`;
-  const r = await fetch(url, { headers: { 'User-Agent': 'BetSite/1.0' }, signal: AbortSignal.timeout(15000) });
+  const r = await fetch(url, { headers: { 'User-Agent': 'BetsFriend/1.0' }, signal: AbortSignal.timeout(15000) });
   if (!r.ok) {
     console.warn(`ESPN ${r.status}: ${url}`);
     throw new Error(`ESPN responded ${r.status}`);
@@ -486,7 +486,7 @@ async function getWeather(home, kickoff, { neutral, indoor } = {}) {
   const key = `${home}:${new Date(k).toISOString().slice(0, 13)}`;
   const c = weatherCache[key];
   if (c && Date.now() - c.at < 30 * 60 * 1000) return c.data;
-  const r = await fetch(weather.forecastUrl(stadium, kickoff), { headers: { 'User-Agent': 'BetSite/1.0' }, signal: AbortSignal.timeout(15000) });
+  const r = await fetch(weather.forecastUrl(stadium, kickoff), { headers: { 'User-Agent': 'BetsFriend/1.0' }, signal: AbortSignal.timeout(15000) });
   if (!r.ok) throw new Error(`Weather service responded ${r.status}`);
   const data = { roof: stadium.roof, stadium: stadium.name, ...(weather.summarizeForecast(await r.json(), kickoff) || { status: 'unavailable' }) };
   weatherCache[key] = { at: Date.now(), data };
@@ -509,7 +509,7 @@ async function oddsApi(pathAndQuery) {
   const key = oddsApiKey();
   if (!key) throw Object.assign(new Error('Add your free Odds API key in Settings'), { status: 400 });
   const url = `https://api.the-odds-api.com/v4/${pathAndQuery}${pathAndQuery.includes('?') ? '&' : '?'}apiKey=${encodeURIComponent(key)}`;
-  const r = await fetch(url, { headers: { 'User-Agent': 'BetSite/1.0' }, signal: AbortSignal.timeout(20000) });
+  const r = await fetch(url, { headers: { 'User-Agent': 'BetsFriend/1.0' }, signal: AbortSignal.timeout(20000) });
   if (r.headers.get('x-requests-remaining') != null) {
     oddsState.remaining = Number(r.headers.get('x-requests-remaining'));
     oddsState.used = Number(r.headers.get('x-requests-used'));
@@ -736,7 +736,7 @@ async function handleAuthApi(req, res, url, local) {
     auth.endSession(auth.tokenFrom(req));
     return send(res, 200, { ok: true }, { 'Set-Cookie': auth.clearCookieHeader() });
   }
-  if (!local) return send(res, 403, { error: 'Change phone access from the computer running BetSite.' });
+  if (!local) return send(res, 403, { error: 'Change phone access from the computer running BetsFriend.' });
   if (action === 'password' && req.method === 'POST') {
     const body = await readBody(req);
     auth.setPassword(body.password);
@@ -818,9 +818,9 @@ async function handleApi(req, res, url) {
       updateCheckCache = null;
       const autoRestart = process.env.BETSITE_LAUNCHER === '1';
       send(res, 200, { ok: true, ...result, restarting: autoRestart });
-      console.log(`Installed BetSite version ${result.sha.slice(0, 7)} (${result.files} files).`);
+      console.log(`Installed BetsFriend version ${result.sha.slice(0, 7)} (${result.files} files).`);
       if (autoRestart) setTimeout(() => process.exit(RESTART_CODE), 300);
-      else console.log('Restart BetSite to finish the update: press Control+C, then run npm start.');
+      else console.log('Restart BetsFriend to finish the update: press Control+C, then run npm start.');
       return;
     } catch (err) {
       return send(res, 500, { error: `Update failed: ${err.message}` });
@@ -901,7 +901,7 @@ async function handleApi(req, res, url) {
   }
 
   if (resource === 'export' && req.method === 'GET') {
-    return send(res, 200, db, { 'Content-Disposition': 'attachment; filename="betsite-backup.json"' });
+    return send(res, 200, db, { 'Content-Disposition': 'attachment; filename="betsfriend-backup.json"' });
   }
 
   if (resource === 'import' && req.method === 'POST') {
@@ -990,7 +990,7 @@ function readRaw(req) {
 async function remoteGate(req, res, url) {
   const isApi = url.pathname.startsWith('/api/');
   if (!auth.passwordSet()) {
-    if (isApi) send(res, 403, { error: 'Phone access is off. Set a password in Settings on the computer running BetSite.' });
+    if (isApi) send(res, 403, { error: 'Phone access is off. Set a password in Settings on the computer running BetsFriend.' });
     else send(res, 403, blockedPage(), { 'Content-Type': 'text/html; charset=utf-8' });
     return true;
   }
@@ -1041,7 +1041,7 @@ const server = http.createServer(async (req, res) => {
 
 if (require.main === module) {
   server.listen(PORT, HOST, () => {
-    console.log(`BetSite running at http://localhost:${PORT}  (data: ${DATA_FILE})`);
+    console.log(`BetsFriend running at http://localhost:${PORT}  (data: ${DATA_FILE})`);
     if (auth.passwordSet()) {
       const wifi = lanUrls().find((u) => u.kind === 'wifi');
       if (wifi) console.log(`On your phone (same Wi-Fi): ${wifi.url}`);

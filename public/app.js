@@ -554,7 +554,7 @@
 
     app.innerHTML = `
       <div class="page-head"><div><h1>Bets</h1><div class="muted">${filtered.length} of ${state.bets.length} bets · ${record(s)} · ${pct(s.winRate)} win rate · ${plHtml(s.profit)}</div></div>
-        <div class="btn-row"><button class="btn" id="autoSettleBtn" title="Look up final scores and grade pending bets">⚡ Auto-settle</button><button class="btn primary" data-add-bet>+ Add bet</button></div></div>
+        <div class="btn-row"><button class="btn" id="autoSettleBtn" title="Look up final scores and grade pending bets">⚡ Auto-settle</button><button class="btn" id="pasteSlipBtn">📋 Paste bet slip</button><button class="btn primary" data-add-bet>+ Add bet</button></div></div>
       <div class="card">
         <form class="filters" id="betFilters">
           <input type="search" name="q" placeholder="Search bets, players, notes…" value="${esc(params.get('q') || '')}">
@@ -604,6 +604,7 @@
     );
     app.querySelector('[data-add-bet]').addEventListener('click', () => openBetForm());
     app.querySelector('#autoSettleBtn').addEventListener('click', () => runAutoSettle({ open: true }));
+    app.querySelector('#pasteSlipBtn').addEventListener('click', () => openSlipImport());
     wireCommon();
   }
 
@@ -1771,7 +1772,9 @@
     const books = [...new Set(state.bets.map((x) => x.book).filter(Boolean))];
 
     modalForm.innerHTML = `
-      <h2>${editing ? 'Edit bet' : duplicate ? 'Duplicate bet' : 'Add a bet'}</h2>
+      <div class="card-head" style="margin-bottom:8px"><h2 style="margin:0">${editing ? 'Edit bet' : duplicate ? 'Duplicate bet' : bet && bet.fromSlip ? 'Check your bet slip' : 'Add a bet'}</h2>
+        ${editing || duplicate || (bet && bet.fromSlip) ? '' : '<button type="button" class="btn sm" data-paste-slip>📋 Paste a bet slip instead</button>'}</div>
+      ${bet && bet.fromSlip ? '<div class="alert small">Filled in from your bet slip. Check everything, especially teams for player props, then save.</div>' : ''}
       <div class="form-grid">
         <div class="field"><label>Date</label><input type="date" name="date" value="${esc(b.date)}" required></div>
         <div class="field"><label>Sport</label><select name="sport">${sel(['NFL', 'NBA', 'Other'], b.sport)}</select></div>
@@ -1805,6 +1808,8 @@
       <div class="muted small" id="toWin"></div>
       <div class="modal-actions"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" type="submit">${editing ? 'Save changes' : 'Add bet'}</button></div>`;
     wireModalClose();
+    const pasteBtn = modalForm.querySelector('[data-paste-slip]');
+    if (pasteBtn) pasteBtn.addEventListener('click', () => openSlipImport());
 
     const f = modalForm;
     const teamSlot = f.querySelector('[data-team-slot]');
@@ -2099,6 +2104,44 @@
     } catch (err) {
       el.innerHTML = `<div class="alert small">${esc(err.message)}</div>`;
     }
+  }
+
+  // ---------- bet slip import ----------
+
+  function openSlipImport(text = '') {
+    modalForm.innerHTML = `
+      <h2>📋 Paste a bet slip</h2>
+      <p class="muted small" style="margin-top:0">Copy the confirmation text from your sportsbook app or website (bet details, odds, wager) and paste it here. You'll check everything before it's saved.</p>
+      <textarea name="slip" rows="9" placeholder="e.g.
+Kansas City Chiefs -3.5  -110
+Buffalo Bills @ Kansas City Chiefs
+Wager: $55.00   To Win: $50.00">${esc(text)}</textarea>
+      <div id="slipPreview"></div>
+      <div class="modal-actions"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn" data-parse>Read slip</button><button type="button" class="btn primary" data-continue disabled>Continue to bet form</button></div>`;
+    modalForm.onsubmit = (e) => e.preventDefault();
+    wireModalClose();
+    if (!modal.open) modal.showModal();
+    let parsed = null;
+    const preview = modalForm.querySelector('#slipPreview');
+    const go = modalForm.querySelector('[data-continue]');
+    const read = () => {
+      parsed = window.BetSlip.parseSlip(modalForm.slip.value);
+      const bet = window.BetSlip.slipToBet(parsed);
+      const row = (k, v) => (v === '' || v == null ? '' : `<dt>${k}</dt><dd>${v}</dd>`);
+      const legLine = (l) => `<li>${esc(betTitle({ ...l, sport: l.sport || bet.sport }))} <span class="muted small">${esc([l.betType, l.odds != null && l.odds !== '' ? oddsStr(l.odds) : '', l.game || ''].filter(Boolean).join(' · '))}</span></li>`;
+      preview.innerHTML = `<div class="slip-preview">
+        <dl class="kv">${row('Bet type', esc(parsed.betType || '—'))}${row('Sportsbook', esc(parsed.book || ''))}${row('Odds', parsed.odds != null ? oddsStr(parsed.odds) : '')}${row('Stake', parsed.stake != null ? money(parsed.stake) : '')}${row('To win', parsed.toWin != null ? money(parsed.toWin) : '')}${row('Date', parsed.date ? fmtDate(parsed.date) : '')}</dl>
+        ${parsed.legs.length ? `<div style="margin-top:6px"><strong>${parsed.legs.length > 1 ? `${parsed.legs.length} selections` : 'Selection'}</strong><ul class="slip-legs">${(bet.legs || [bet]).map(legLine).join('')}</ul></div>` : ''}
+        ${parsed.warnings.map((w) => `<div class="alert small" style="margin:6px 0 0">${esc(w)}</div>`).join('')}</div>`;
+      go.disabled = false;
+    };
+    modalForm.querySelector('[data-parse]').addEventListener('click', read);
+    modalForm.slip.addEventListener('paste', () => setTimeout(read, 0));
+    go.addEventListener('click', () => {
+      if (!parsed) read();
+      openBetForm({ ...window.BetSlip.slipToBet(parsed), fromSlip: true });
+    });
+    modalForm.slip.focus();
   }
 
   // ---------- auto-settle ----------

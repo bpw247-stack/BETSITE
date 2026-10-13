@@ -361,3 +361,7 @@ dialog.wide { width: min(980px, calc(100vw - 32px)); }
 .wx-flags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
 .wx-flag { font-size: .74rem; padding: 1px 7px; border-radius: 999px; background: var(--warn-bg); color: var(--warn); }
 .wx-flag.wind, .wx-flag.snow { background: var(--bad-bg); color: var(--bad); }
+
+/* ---------- bet slip import ---------- */
+.slip-preview { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-top: 10px; }
+.slip-legs { margin: 4px 0 0; padding-left: 18px; }

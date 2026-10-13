@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node start.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "background": "node scripts/background.js on",
+    "background:off": "node scripts/background.js off"
   },
   "engines": {
     "node": ">=18"

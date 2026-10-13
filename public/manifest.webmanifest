@@ -1,0 +1,21 @@
+{
+  "name": "BetsFriend",
+  "short_name": "BetsFriend",
+  "description": "Track your sports bets, picks, props and teams.",
+  "id": "/",
+  "start_url": "/#/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#eef1f5",
+  "theme_color": "#131c2e",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Bets", "url": "/#/bets" },
+    { "name": "Matchups", "url": "/#/matchups" },
+    { "name": "Rankings", "url": "/#/rankings" }
+  ]
+}

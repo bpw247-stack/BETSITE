@@ -41,6 +41,13 @@ test('bets / notes / teamNotes CRUD persists to disk', async (t) => {
   assert.strictEqual((await call('GET', '/api/injuries/mlb')).status, 404);
   assert.strictEqual((await call('GET', '/api/schedule/mlb')).status, 404);
   assert.strictEqual((await call('GET', '/api/h2h/nfl?a=KC&b=KC')).status, 400);
+  const appSt = await call('GET', '/api/app');
+  assert.strictEqual(appSt.status, 200);
+  assert.strictEqual(appSt.body.supported, process.platform === 'darwin');
+  if (process.platform !== 'darwin') assert.strictEqual((await call('POST', '/api/app/background', { on: true })).status, 400);
+  const manifest = await fetch(base + '/manifest.webmanifest');
+  assert.match(manifest.headers.get('content-type'), /manifest\+json/);
+  assert.strictEqual((await manifest.json()).name, 'BetsFriend');
   const noKey = await call('POST', '/api/slip-read', { images: [] });
   assert.strictEqual(noKey.status, 400);
   assert.match(noKey.body.error, /Claude API key/);

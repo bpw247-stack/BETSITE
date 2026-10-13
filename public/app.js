@@ -2358,6 +2358,113 @@
 
   // ---------- settings / backup ----------
 
+  // ---------- desktop app ----------
+  // BetsFriend installs as an app from Chrome/Edge (install prompt) or Safari (File → Add to Dock).
+  // On a Mac it can also run in the background (a launchd agent), so the app always opens.
+
+  let installPrompt = null;
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    installPrompt = e;
+    if (document.getElementById('desktopCard')) renderDesktopCard();
+  });
+  window.addEventListener('appinstalled', () => {
+    installPrompt = null;
+    toast('BetsFriend app installed');
+    if (document.getElementById('desktopCard')) renderDesktopCard();
+  });
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+
+  const inAppWindow = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const isSafari = () => /Safari\//.test(navigator.userAgent) && !/Chrome\/|Chromium\/|Edg\//.test(navigator.userAgent);
+
+  async function renderDesktopCard() {
+    const el = document.getElementById('desktopCard');
+    if (!el) return;
+    let app, auth;
+    try {
+      [app, auth] = await Promise.all([api('GET', '/api/app'), api('GET', '/api/auth/status')]);
+    } catch (err) {
+      el.innerHTML = `<h2>🖥️ Desktop app</h2><div class="alert error">${esc(err.message)}</div>`;
+      return;
+    }
+    if (!el.isConnected) return;
+    const install = inAppWindow()
+      ? '<p class="desk-ok">✓ You’re using the BetsFriend app.</p>'
+      : installPrompt
+      ? '<p>Install BetsFriend as an app: its own window and an icon in the Dock and Launchpad.</p><button class="btn primary" id="installApp">Install BetsFriend app</button>'
+      : isSafari()
+      ? '<p>In Safari, choose <strong>File → Add to Dock</strong>, then click <strong>Add</strong>. BetsFriend gets its own window and Dock icon.</p>'
+      : '<p>Open BetsFriend in <strong>Chrome</strong> or <strong>Edge</strong> and click the install icon at the right end of the address bar, or in <strong>Safari</strong> choose <strong>File → Add to Dock</strong>.</p>';
+    const url = `http://localhost:${app.port}`;
+    let bg = '';
+    if (app.supported && auth.local) {
+      bg = app.installed
+        ? `<h3>Runs in the background <span class="badge won">On</span></h3>
+           <p class="muted small">BetsFriend starts by itself when you log in to this Mac and restarts if it ever stops, so the app always opens. You don't need Terminal.${app.runningAsService ? '' : ' It takes over from the Terminal copy the next time it restarts.'}</p>
+           <button class="btn" id="bgOff">Turn off</button>`
+        : `<h3>Run in the background <span class="badge push">Off</span></h3>
+           <p class="muted small">Right now BetsFriend only runs while its Terminal window is open. Turn this on and it starts by itself when you log in, so the app icon always works and your phone can always reach it. You can close Terminal afterwards.</p>
+           <button class="btn primary" id="bgOn">Run in the background</button>`;
+    } else if (!app.supported && auth.local) {
+      bg = '<p class="muted small">Running in the background is set up for Macs. On this computer, keep the Terminal window with <code>npm start</code> open while you use the app.</p>';
+    }
+    el.innerHTML = `<h2>🖥️ Desktop app</h2>${install}${bg ? `<div class="desk-bg">${bg}</div>` : ''}
+      <p class="muted small" style="margin-top:12px">The app is a window onto BetsFriend running on this computer at <code>${esc(url)}</code>; your bets stay in <code>data/</code>.</p>`;
+
+    const inst = el.querySelector('#installApp');
+    if (inst)
+      inst.addEventListener('click', async () => {
+        const p = installPrompt;
+        installPrompt = null;
+        await p.prompt();
+        renderDesktopCard();
+      });
+    const on = el.querySelector('#bgOn');
+    if (on) on.addEventListener('click', () => moveToBackground());
+    const off = el.querySelector('#bgOff');
+    if (off)
+      off.addEventListener('click', async () => {
+        if (!confirm(app.runningAsService ? 'Stop running BetsFriend in the background?\n\nBetsFriend stops now. To use it again, open Terminal in the BetsFriend folder and run npm start.' : 'Stop running BetsFriend in the background?')) return;
+        try {
+          const r = await api('POST', '/api/app/background', { on: false });
+          if (r.stopping) showOverlay('BetsFriend stopped', 'It no longer runs in the background. To use it again, open Terminal in the BetsFriend folder and run <code>npm start</code>.', true);
+          else renderDesktopCard();
+        } catch (err) {
+          alert(err.message);
+        }
+      });
+  }
+
+  async function moveToBackground() {
+    let before = null;
+    try {
+      before = (await api('GET', '/api/version')).boot;
+    } catch {}
+    showOverlay('Moving BetsFriend to the background…', 'This takes a few seconds. The page reloads by itself, and you can close the Terminal window afterwards.');
+    try {
+      await api('POST', '/api/app/background', { on: true });
+    } catch (err) {
+      overlay.hidden = true;
+      alert(err.message);
+      return;
+    }
+    const deadline = Date.now() + 45000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1500));
+      try {
+        const v = await api('GET', '/api/version');
+        if (v.boot !== before) {
+          location.reload();
+          return;
+        }
+      } catch {
+        /* switching over */
+      }
+    }
+    showOverlay("BetsFriend didn't come back", 'macOS may have blocked the background service. Open Terminal in the BetsFriend folder, run <code>npm start</code>, and try again. If it keeps happening, the log is in <code>data/logs/betsfriend.log</code>.', true);
+  }
+
   async function renderPhoneCard() {
     const el = document.getElementById('phoneCard');
     let st;
@@ -2458,6 +2565,7 @@
   function renderSettings() {
     app.innerHTML = `
       <div class="page-head"><div><h1>Settings & backup</h1><div class="muted">Your data is stored on this computer in <code>data/db.json</code>.</div></div></div>
+      <div class="card" id="desktopCard"><h2>🖥️ Desktop app</h2><div class="muted">Loading…</div></div>
       <div class="card" id="phoneCard"><h2>📱 Phone access</h2><div class="muted">Loading…</div></div>
       ${bankrollCardHtml()}
       <div class="card" id="oddsKeyCard"><h2>🔑 Odds data</h2>
@@ -2479,6 +2587,7 @@
         <dt>Team notes</dt><dd>${state.teamNotes.reduce((n, t) => n + (t.entries || []).length, 0)}</dd></dl></div>`;
     document.getElementById('csvBtn').addEventListener('click', downloadCsv);
     renderPhoneCard();
+    renderDesktopCard();
     document.getElementById('oddsKeyForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       await saveSettings({ oddsApiKey: e.target.key.value.trim() });

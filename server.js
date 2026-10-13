@@ -22,6 +22,7 @@ const market = require('./lib/market');
 const slipReader = require('./lib/slipreader');
 const deps = require('./lib/deps');
 const rankings = require('./lib/rankings');
+const { createMacService } = require('./lib/macservice');
 const { createAuth, isLocalRequest, loginPage, blockedPage } = require('./lib/auth');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -37,6 +38,11 @@ const RESTART_CODE = 75; // start.js relaunches the server when it exits with th
 const updater = createUpdater({ appDir: __dirname, dataDir: path.dirname(DATA_FILE) });
 const auth = createAuth({ dataDir: path.dirname(DATA_FILE) });
 let updateCheckCache = null;
+// keep a custom data location or port when BetsFriend moves to the background
+const SERVICE_ENV = Object.fromEntries(
+  [['DATA_FILE', process.env.DATA_FILE && path.resolve(process.env.DATA_FILE)], ['PORT', process.env.PORT], ['HOST', process.env.HOST]].filter(([, v]) => v)
+);
+const macService = createMacService({ appDir: __dirname, dataDir: path.dirname(DATA_FILE) });
 const BOOT_ID = crypto.randomUUID(); // changes on every restart, so the page can tell the new server is up
 
 const COLLECTIONS = ['bets', 'notes', 'teamNotes', 'coaches', 'settings', 'splits'];
@@ -113,6 +119,7 @@ const MIME = {
   '.png': 'image/png',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
+  '.webmanifest': 'application/manifest+json',
 };
 
 function serveStatic(req, res, pathname) {
@@ -866,6 +873,24 @@ async function handleApi(req, res, url) {
     }
   }
 
+  if (resource === 'app') {
+    if (req.method === 'GET') return send(res, 200, { ...macService.status(), port: PORT });
+    if (id === 'background' && req.method === 'POST') {
+      if (!isLocalRequest(req)) return send(res, 403, { error: 'Change this on the computer running BetsFriend.' });
+      const body = await readBody(req);
+      if (body.on) {
+        const st = macService.install(SERVICE_ENV);
+        send(res, 200, { ...st, restarting: true });
+        // hand the port over to the background copy launchd is starting
+        setTimeout(() => process.exit(0), 1500);
+        return;
+      }
+      const st = macService.uninstall();
+      return send(res, 200, { ...st, stopping: st.runningAsService });
+    }
+    return send(res, 404, { error: 'Not found' });
+  }
+
   if (resource === 'version' && req.method === 'GET') {
     const v = updater.installed();
     return send(res, 200, { sha: v ? v.sha : null, installedAt: v ? v.installedAt : null, boot: BOOT_ID, autoRestart: process.env.BETSITE_LAUNCHER === '1' });
@@ -1076,6 +1101,8 @@ function readRaw(req) {
 
 // Requests from other devices: blocked until a password is set, then sign-in required.
 // Returns true when the request has been answered here.
+const PUBLIC_ASSETS = /^\/(manifest\.webmanifest|sw\.js|offline\.html|icons\/[\w.-]+)$/;
+
 async function remoteGate(req, res, url) {
   const isApi = url.pathname.startsWith('/api/');
   if (!auth.passwordSet()) {
@@ -1101,6 +1128,7 @@ async function remoteGate(req, res, url) {
     return true;
   }
   if (auth.validSession(auth.tokenFrom(req))) return false;
+  if (PUBLIC_ASSETS.test(url.pathname)) return false; // app icon, manifest, offline page: nothing private
   if (isApi) send(res, 401, { error: 'Sign in required' });
   else {
     res.writeHead(302, { Location: '/login' });
@@ -1129,6 +1157,16 @@ const server = http.createServer(async (req, res) => {
 });
 
 if (require.main === module) {
+  // In the background (launchd) the port may still be held by the copy that's handing over: wait for it.
+  server.on('error', (err) => {
+    if (err.code !== 'EADDRINUSE') throw err;
+    if (process.env.BETSFRIEND_SERVICE === '1') {
+      setTimeout(() => server.listen(PORT, HOST), 2000);
+      return;
+    }
+    console.error(`\nBetsFriend is already running (probably in the background). Open http://localhost:${PORT}\n`);
+    process.exit(1);
+  });
   server.listen(PORT, HOST, () => {
     console.log(`BetsFriend running at http://localhost:${PORT}  (data: ${DATA_FILE})`);
     deps.installInBackground();

@@ -677,3 +677,8 @@ dialog.wide { width: min(980px, calc(100vw - 24px)); }
 .sm-card { margin-bottom: 20px; }
 .sm-card .sm-ask { margin-top: 0; max-width: none; }
 @media (max-width: 640px) { .sm-ask { flex-wrap: wrap; } .sm-ask .sm-label { flex-basis: 100%; } }
+
+/* ---------- desktop app ---------- */
+.desk-ok { color: var(--good); font-weight: 600; }
+.desk-bg { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.desk-bg h3 { display: flex; align-items: center; gap: 8px; }

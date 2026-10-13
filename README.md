@@ -42,6 +42,17 @@ A personal website for tracking your sports bets: picks, money placed, wins and 
 - **One-click updates**: the site checks GitHub for new versions (on start and every 3 hours). When one exists, a banner offers **Update now**, and **Settings** shows what's new. Updating backs up `data/db.json` to `data/backups/`, installs the new code without touching `data/`, and restarts the site automatically.
 - **Auto-refresh**: while the site is open, injuries refresh every 15 minutes and schedules every 10 minutes. During live games they refresh every minute. The page redraws quietly, and waits if you're typing or have a form open.
 
+## Desktop app (Mac)
+
+BetsFriend can live in your Dock like any other app. Go to **Settings → Desktop app**:
+
+1. **Install the app**: click **Install BetsFriend app** in Chrome or Edge (or the install icon at the right end of the address bar). In Safari, choose **File → Add to Dock**. BetsFriend gets its own window and an icon in the Dock and Launchpad.
+2. **Run in the background**: click **Run in the background**. BetsFriend then starts by itself when you log in and restarts if it ever stops, so the app icon always opens and your phone can always reach it. You can close the Terminal window. It's a standard per-user macOS launch agent (`~/Library/LaunchAgents/com.betsfriend.server.plist`); no admin password needed. The log is in `data/logs/betsfriend.log`.
+
+From Terminal, `npm run background` and `npm run background:off` do the same switch. If you move the BetsFriend folder or reinstall Node, run `npm run background` again so it points at the new location.
+
+If BetsFriend isn't running when you open the app, you get a page explaining what to do instead of a browser error.
+
 ## Running it
 
 You need [Node.js](https://nodejs.org) 18 or newer. `npm start` installs the one package BetsFriend needs (Anthropic's library, for reading slips with Claude) the first time it runs, and again whenever an update needs a newer version.

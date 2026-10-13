@@ -14,6 +14,7 @@ const { parseEspnScoreboard, espnDay } = require('./lib/schedule');
 const { seasonsToSearch, meetingsFromSchedule, parseGameSummary, summarizeH2H } = require('./lib/h2h');
 const { createUpdater } = require('./lib/updater');
 const niche = require('./lib/niche');
+const grading = require('./lib/grading');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -334,6 +335,91 @@ async function getTeamNiche(league, team, force) {
   return data;
 }
 
+// ---------- box scores & auto-settle ----------
+
+// Final box scores never change: keep compact versions on disk.
+const boxCaches = {};
+function boxCache(league) {
+  if (!boxCaches[league]) {
+    const file = path.join(path.dirname(DATA_FILE), 'cache', `box-${league}.json`);
+    let map = {};
+    try {
+      map = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {}
+    let timer = null;
+    boxCaches[league] = {
+      map,
+      save() {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          try {
+            fs.mkdirSync(path.dirname(file), { recursive: true });
+            fs.writeFileSync(file, JSON.stringify(map));
+          } catch (err) {
+            console.warn('Could not save box score cache:', err.message);
+          }
+        }, 500);
+      },
+    };
+  }
+  return boxCaches[league];
+}
+
+async function getBoxScore(league, eventId) {
+  const cache = boxCache(league);
+  if (cache.map[eventId]) return cache.map[eventId];
+  const box = grading.parseBoxScore(await espnJson(league, `summary?event=${encodeURIComponent(eventId)}`));
+  if (box.completed) {
+    cache.map[eventId] = box;
+    cache.save();
+  }
+  return box;
+}
+
+const teamScheduleCache = {}; // `${league}:${team}:${season}` -> { at, payloads }
+async function getTeamSeasonSchedule(league, team, season) {
+  const key = `${league}:${team}:${season}`;
+  const c = teamScheduleCache[key];
+  if (c && Date.now() - c.at < 15 * 60 * 1000) return c.payloads;
+  const slug = encodeURIComponent(team.toLowerCase());
+  const res = await Promise.allSettled([2, 3].map((t) => espnJson(league, `teams/${slug}/schedule?season=${season}&seasontype=${t}`)));
+  if (res.every((r) => r.status === 'rejected')) throw res[0].reason;
+  const payloads = res.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+  teamScheduleCache[key] = { at: Date.now(), payloads };
+  return payloads;
+}
+
+// Grade every pending straight bet / parlay leg. Nothing is saved: the page asks you first.
+async function autoSettle() {
+  const today = new Date().toISOString().slice(0, 10);
+  const jobs = [];
+  for (const bet of db.bets) {
+    const items = bet.legs && bet.legs.length ? bet.legs.map((l) => ({ pick: { ...l, sport: l.sport || bet.sport }, legId: l.id })) : [{ pick: bet, legId: null }];
+    for (const { pick, legId } of items) {
+      if ((pick.result || 'pending') !== 'pending' || !bet.date || bet.date > today) continue;
+      const league = String(pick.sport || '').toLowerCase();
+      if (!LEAGUE_PATHS[league]) continue;
+      jobs.push({ bet, pick, legId, league });
+    }
+  }
+  const results = await pool(jobs, 4, async ({ bet, pick, legId, league }) => {
+    const base = { betId: bet.id, legId };
+    const team = pick.team || pick.opponent;
+    if (!team) return { ...base, status: 'review', reason: 'No team on this pick, so its game can\'t be found' };
+    try {
+      const payloads = await getTeamSeasonSchedule(league, team, grading.seasonForDate(league, bet.date));
+      const game = grading.findGameForPick(payloads, team, pick.team ? pick.opponent : pick.team, bet.date);
+      if (!game) return { ...base, status: 'notFound', reason: 'No game found within 10 days of the bet date' };
+      if (!game.final) return { ...base, status: 'pending', reason: 'Game not final yet' };
+      const box = await getBoxScore(league, game.id);
+      return { ...base, gameId: game.id, gameDate: game.date, ...grading.gradePick(pick, box, league) };
+    } catch (err) {
+      return { ...base, status: 'error', reason: err.message };
+    }
+  });
+  return { checked: jobs.length, results };
+}
+
 // ---------- API ----------
 
 async function handleApi(req, res, url) {
@@ -429,6 +515,10 @@ async function handleApi(req, res, url) {
         [b]: rb.status === 'fulfilled' ? rb.value : { abbr: b, error: rb.reason.message },
       },
     });
+  }
+
+  if (resource === 'autosettle' && req.method === 'POST') {
+    return send(res, 200, await autoSettle());
   }
 
   if (resource === 'export' && req.method === 'GET') {

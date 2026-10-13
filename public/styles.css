@@ -327,3 +327,11 @@ dialog.wide { width: min(980px, calc(100vw - 32px)); }
 .takeaways { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .takeaways li { color: var(--text); }
 .insight-tables { display: grid; grid-template-columns: repeat(auto-fit, minmax(560px, 1fr)); gap: 16px; } .insight-tables > .card { margin-top: 0; } @media (max-width: 640px) { .insight-tables { grid-template-columns: minmax(0, 1fr); } }
+
+/* ---------- auto-settle ---------- */
+.settle-banner { background: var(--warn-bg); }
+.settle-list { display: flex; flex-direction: column; gap: 6px; }
+.settle-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; margin: 0; color: var(--text); font-size: .9rem; }
+.settle-item > span:first-of-type, .settle-item > span:nth-child(2) { flex: 1; min-width: 0; }
+.settle-title { display: block; font-weight: 600; }
+.settle-item > span:not(.badge) { flex: 1; min-width: 0; }

@@ -553,7 +553,7 @@
 
     app.innerHTML = `
       <div class="page-head"><div><h1>Bets</h1><div class="muted">${filtered.length} of ${state.bets.length} bets · ${record(s)} · ${pct(s.winRate)} win rate · ${plHtml(s.profit)}</div></div>
-        <button class="btn primary" data-add-bet>+ Add bet</button></div>
+        <div class="btn-row"><button class="btn" id="autoSettleBtn" title="Look up final scores and grade pending bets">⚡ Auto-settle</button><button class="btn primary" data-add-bet>+ Add bet</button></div></div>
       <div class="card">
         <form class="filters" id="betFilters">
           <input type="search" name="q" placeholder="Search bets, players, notes…" value="${esc(params.get('q') || '')}">
@@ -602,6 +602,7 @@
       })
     );
     app.querySelector('[data-add-bet]').addEventListener('click', () => openBetForm());
+    app.querySelector('#autoSettleBtn').addEventListener('click', () => runAutoSettle({ open: true }));
     wireCommon();
   }
 
@@ -2016,6 +2017,112 @@
 
   document.getElementById('addBetBtn').addEventListener('click', () => openBetForm());
 
+  // ---------- auto-settle ----------
+
+  const pendingPastPicks = () => {
+    const today = new Date().toISOString().slice(0, 10);
+    return S.picks(state.bets).filter((x) => (x.result || 'pending') === 'pending' && ['NFL', 'NBA'].includes(x.sport) && x.date && x.date <= today);
+  };
+
+  function settleLabel(r) {
+    const bet = state.bets.find((b) => b.id === r.betId);
+    if (!bet) return null;
+    const leg = r.legId ? (bet.legs || []).find((l) => l.id === r.legId) : null;
+    return leg ? `${betTitle({ ...leg, sport: leg.sport || bet.sport })} <span class="muted small">(leg of ${esc(betTitle(bet))})</span>` : esc(betTitle(bet));
+  }
+
+  async function runAutoSettle({ open, quiet } = {}) {
+    if (!pendingPastPicks().length) {
+      if (!quiet) toast('No pending bets from past games to check');
+      return;
+    }
+    if (open) {
+      modalForm.innerHTML = '<h2>⚡ Auto-settle</h2><div class="empty">Looking up final scores and box scores…</div>';
+      modalForm.onsubmit = (e) => e.preventDefault();
+      modal.showModal();
+    }
+    try {
+      state.autoSettle = await api('POST', '/api/autosettle');
+    } catch (err) {
+      if (open) modalForm.innerHTML = `<h2>⚡ Auto-settle</h2><div class="alert error">${esc(err.message)}</div><div class="modal-actions"><button type="button" class="btn" data-close>Close</button></div>`;
+      wireModalClose();
+      return;
+    }
+    renderSettleBanner();
+    if (open) openSettleReview();
+  }
+
+  function renderSettleBanner() {
+    const el = document.getElementById('settleBanner');
+    const graded = ((state.autoSettle && state.autoSettle.results) || []).filter((r) => r.status === 'graded' && settleLabel(r));
+    if (!graded.length || state.settleDismissed) {
+      el.hidden = true;
+      return;
+    }
+    el.innerHTML = `<span>✅ <strong>${plural(graded.length, 'pick')}</strong> ${graded.length === 1 ? 'has' : 'have'} final results ready to settle.</span>
+      <span class="btn-row"><button class="btn sm primary" data-review>Review & settle</button><button class="btn sm" data-later>Later</button></span>`;
+    el.hidden = false;
+    el.querySelector('[data-review]').addEventListener('click', openSettleReview);
+    el.querySelector('[data-later]').addEventListener('click', () => ((state.settleDismissed = true), renderSettleBanner()));
+  }
+
+  function openSettleReview() {
+    const results = ((state.autoSettle && state.autoSettle.results) || []).filter((r) => settleLabel(r));
+    const graded = results.filter((r) => r.status === 'graded');
+    const manual = results.filter((r) => ['review', 'unsupported', 'notFound', 'error'].includes(r.status));
+    const waiting = results.filter((r) => r.status === 'pending').length;
+    modalForm.innerHTML = `
+      <h2>⚡ Auto-settle</h2>
+      ${graded.length ? `<p class="muted small" style="margin-top:0">Check the results below, untick anything that looks wrong, then apply.</p>
+        <div class="settle-list">${graded
+          .map((r, i) => `<label class="settle-item"><input type="checkbox" data-i="${i}" checked style="width:auto">
+            <span><span class="settle-title">${settleLabel(r)}</span><span class="sub">${esc(r.detail || '')}</span></span>${badge(r.result)}</label>`)
+          .join('')}</div>` : '<div class="muted">No new final results to apply.</div>'}
+      ${manual.length ? `<h3 style="margin-top:16px">Needs you</h3><div class="settle-list">${manual
+        .map((r) => `<div class="settle-item"><span><span class="settle-title">${settleLabel(r)}</span><span class="sub">${esc(r.reason || '')}</span></span><a class="btn sm" href="#/bet/${encodeURIComponent(r.betId)}" data-close>Open</a></div>`)
+        .join('')}</div>` : ''}
+      ${waiting ? `<p class="muted small">${plural(waiting, 'pick')} ${waiting === 1 ? 'is' : 'are'} for games that haven't finished yet.</p>` : ''}
+      <div class="modal-actions"><button type="button" class="btn" data-close>Close</button>${graded.length ? `<button type="button" class="btn primary" data-apply>Apply ${plural(graded.length, 'result')}</button>` : ''}</div>`;
+    modalForm.onsubmit = (e) => e.preventDefault();
+    wireModalClose();
+    if (!modal.open) modal.showModal();
+    const apply = modalForm.querySelector('[data-apply]');
+    if (apply) {
+      const update = () => {
+        const n = modalForm.querySelectorAll('.settle-item input:checked').length;
+        apply.textContent = `Apply ${plural(n, 'result')}`;
+        apply.disabled = !n;
+      };
+      modalForm.querySelectorAll('.settle-item input').forEach((c) => c.addEventListener('change', update));
+      apply.addEventListener('click', async () => {
+        const chosen = [...modalForm.querySelectorAll('.settle-item input:checked')].map((c) => graded[Number(c.dataset.i)]);
+        const byBet = new Map();
+        for (const r of chosen) byBet.set(r.betId, [...(byBet.get(r.betId) || []), r]);
+        try {
+          for (const [betId, rs] of byBet) {
+            const bet = state.bets.find((b) => b.id === betId);
+            if (hasLegs(bet)) {
+              const legs = bet.legs.map((l) => {
+                const r = rs.find((x) => x.legId === l.id);
+                return r ? { ...l, result: r.result } : l;
+              });
+              await saveBet({ ...bet, legs, result: S.parlayResult(legs) });
+            } else {
+              await saveBet({ ...bet, result: rs[0].result });
+            }
+          }
+          state.autoSettle.results = state.autoSettle.results.filter((r) => !chosen.includes(r));
+          modal.close();
+          renderSettleBanner();
+          toast(`Settled ${plural(chosen.length, 'pick')}`);
+          render();
+        } catch (err) {
+          alert(err.message);
+        }
+      });
+    }
+  }
+
   // ---------- updates ----------
 
   const overlay = document.getElementById('overlay');
@@ -2170,7 +2277,11 @@
   setInterval(checkForUpdate, 3 * 60 * 60 * 1000);
 
   loadAll()
-    .then(render)
+    .then(() => {
+      render();
+      runAutoSettle({ quiet: true });
+      setInterval(() => !document.hidden && runAutoSettle({ quiet: true }), 30 * 60 * 1000);
+    })
     .catch((err) => {
       app.innerHTML = `<div class="alert error">Could not reach the BetSite server: ${esc(err.message)}</div>`;
     });

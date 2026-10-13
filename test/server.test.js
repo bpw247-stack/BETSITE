@@ -41,6 +41,9 @@ test('bets / notes / teamNotes CRUD persists to disk', async (t) => {
   assert.strictEqual((await call('GET', '/api/injuries/mlb')).status, 404);
   assert.strictEqual((await call('GET', '/api/schedule/mlb')).status, 404);
   assert.strictEqual((await call('GET', '/api/h2h/nfl?a=KC&b=KC')).status, 400);
+  const noKey = await call('POST', '/api/slip-read', { images: [] });
+  assert.strictEqual(noKey.status, 400);
+  assert.match(noKey.body.error, /Claude API key/);
 
   const page = await fetch(base + '/');
   assert.match(await page.text(), /BetsFriend/);

@@ -75,3 +75,32 @@ test('garbage text produces warnings, not crashes', () => {
   assert.strictEqual(p.legs.length, 0);
   assert.ok(p.warnings.length >= 2);
 });
+
+test('screenshot layout: player name on its own line above the selection (FanDuel-style)', () => {
+  const p = P(`FanDuel My Bets
+Josh Allen +105
+Over 249.5 Passing Yards
+Buffalo Bills @ Kansas City Chiefs
+Total Wager $20.00
+Potential Payout $41.00`);
+  assert.strictEqual(p.betType, 'Player Prop');
+  const l = p.legs[0];
+  assert.deepStrictEqual([l.player, l.propCategory, l.side, l.line, l.odds, l.game], ['Josh Allen', 'Passing Yards', 'Over', 249.5, 105, 'BUF @ KC']);
+  assert.strictEqual(p.stake, 20);
+  assert.strictEqual(p.toWin, 21);
+});
+
+test('screenshot layout: prop name wrapped onto two lines, over/under on the next (BetMGM-style)', () => {
+  const p = P(`BetMGM Straight
+Nikola Jokic - Points + Rebounds +
+Assists
+Under 48.5 -115
+Denver Nuggets at Boston Celtics
+Stake $46.00
+Potential winnings $40.00`);
+  assert.strictEqual(p.book, 'BetMGM');
+  assert.strictEqual(p.betType, 'Player Prop');
+  assert.strictEqual(p.legs.length, 1);
+  const l = p.legs[0];
+  assert.deepStrictEqual([l.player, l.propCategory, l.side, l.line, l.odds, l.sport], ['Nikola Jokic', 'Pts + Reb + Ast', 'Under', 48.5, -115, 'NBA']);
+});

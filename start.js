@@ -6,10 +6,12 @@
 
 const { spawn } = require('child_process');
 const path = require('path');
+const { installSync } = require('./lib/deps');
 
 const RESTART_CODE = 75;
 
 function run() {
+  installSync();
   const child = spawn(process.execPath, [path.join(__dirname, 'server.js')], {
     stdio: 'inherit',
     env: { ...process.env, BETSITE_LAUNCHER: '1' },

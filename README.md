@@ -18,7 +18,9 @@ A personal website for tracking your sports bets: picks, money placed, wins and 
 - **Insights**: your strengths and weaknesses in plain English ("You're 12-3 on NBA unders"). It breaks your record down by what you bet, prop category and side, day of week, sportsbook, favorites vs underdogs, odds range, bet size and straight vs parlay, and shows which legs sink your parlays.
 - **Suggested bet sizes**: set a bankroll and unit size in Settings. The bet form then offers 0.5/1/2/3-unit buttons, an optional quarter-Kelly size from your own win estimate, and a warning when a bet is above your limit.
 - **Game weather** (NFL): forecast at kickoff for outdoor stadiums (temperature, wind, gusts, chance of rain or snow) from Open-Meteo, with flags for wind, rain, snow, freezing and heat. Domes show as indoors, retractable roofs are noted, and neutral-site games are skipped.
-- **Bet slip import**: paste the confirmation text from your sportsbook. The site reads the book, stake, odds, date and selections, including parlay legs, alternate lines and yes/no props, and pre-fills the bet form for you to check.
+- **Bet slip import** (**📷 Add from slip** on the Bets page): upload screenshots of a bet (up to 4 for a long parlay), drag them in, paste an image, or paste the confirmation text. The site reads the book, stake, odds, date and selections, including parlay legs, alternate lines and yes/no props, and pre-fills the bet form for you to check.
+  - Screenshots are read for free in your browser (Tesseract text recognition, loaded the first time you use it).
+  - For better accuracy on phone photos and unusual layouts, add a Claude API key in **Settings → Reading bet slip screenshots**, and Claude reads them instead. That costs a few cents per slip on your Anthropic account. If Claude can't read one, you can switch to the free reader with one click.
 - **Phone access**: the computer running BetsFriend never needs a password. Other devices are blocked until you set one in **Settings → Phone access**, then sign in once; the login lasts 90 days and is limited to 10 tries per 15 minutes. Settings shows the address to open on your phone on the same Wi-Fi. For access away from home, Tailscale works without opening your network to the internet.
 - **Market** tab:
   - **Lines & splits**: every upcoming game with the opening line (from ESPN when available, otherwise the first line this site saw), the current line and how it has moved. With a free The Odds API key you also get the consensus across sportsbooks and the best available price per side. Enter public bet % and money % per game, or use **📋 Paste splits for all games**: paste a page or article (SportsBettingDime, VSIN, Action Network…) and the site reads every game's percentages from sentences or tables, for you to review before saving. Pasted or typed in, and the site flags bigger bets against the public, the public side and reverse line movement.
@@ -36,7 +38,7 @@ A personal website for tracking your sports bets: picks, money placed, wins and 
 
 ## Running it
 
-You need [Node.js](https://nodejs.org) 18 or newer. There are no dependencies to install.
+You need [Node.js](https://nodejs.org) 18 or newer. `npm start` installs the one package BetsFriend needs (Anthropic's library, for reading slips with Claude) the first time it runs, and again whenever an update needs a newer version.
 
 ```bash
 npm start

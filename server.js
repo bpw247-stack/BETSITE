@@ -19,6 +19,8 @@ const grading = require('./lib/grading');
 const weather = require('./lib/weather');
 const trends = require('./lib/trends');
 const market = require('./lib/market');
+const slipReader = require('./lib/slipreader');
+const deps = require('./lib/deps');
 const { createAuth, isLocalRequest, loginPage, blockedPage } = require('./lib/auth');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -500,6 +502,11 @@ const oddsState = { remaining: null, used: null, error: null };
 const gameOddsCache = {}; // league -> { at, events }
 const propsCache = {}; // league -> { [espnGameId]: { at, eventId, props } }
 
+function claudeApiKey() {
+  const s = (db.settings || []).find((x) => x.id === 'app');
+  return (s && s.claudeApiKey && String(s.claudeApiKey).trim()) || '';
+}
+
 function oddsApiKey() {
   const s = (db.settings || []).find((x) => x.id === 'app');
   return (s && s.oddsApiKey && String(s.oddsApiKey).trim()) || '';
@@ -846,6 +853,17 @@ async function handleApi(req, res, url) {
     });
   }
 
+  if (resource === 'slip-read' && req.method === 'POST') {
+    const apiKey = claudeApiKey();
+    if (!apiKey) return send(res, 400, { error: 'Add a Claude API key in Settings to read slips with Claude.' });
+    try {
+      const body = await readBody(req);
+      return send(res, 200, await slipReader.readSlip({ apiKey, images: body.images }));
+    } catch (err) {
+      return send(res, err.status || 502, { error: err.message });
+    }
+  }
+
   if (resource === 'propresearch') {
     const league = (id || '').toLowerCase();
     if (!LEAGUE_PATHS[league]) return send(res, 404, { error: 'Unknown league' });
@@ -1042,6 +1060,7 @@ const server = http.createServer(async (req, res) => {
 if (require.main === module) {
   server.listen(PORT, HOST, () => {
     console.log(`BetsFriend running at http://localhost:${PORT}  (data: ${DATA_FILE})`);
+    deps.installInBackground();
     if (auth.passwordSet()) {
       const wifi = lanUrls().find((u) => u.kind === 'wifi');
       if (wifi) console.log(`On your phone (same Wi-Fi): ${wifi.url}`);

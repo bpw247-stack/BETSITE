@@ -569,7 +569,7 @@
 
     app.innerHTML = `
       <div class="page-head"><div><h1>Bets</h1><div class="muted">${filtered.length} of ${state.bets.length} bets · ${record(s)} · ${pct(s.winRate)} win rate · ${plHtml(s.profit)}</div></div>
-        <div class="btn-row"><button class="btn" id="autoSettleBtn" title="Look up final scores and grade pending bets">⚡ Auto-settle</button><button class="btn" id="pasteSlipBtn">📋 Paste bet slip</button><button class="btn primary" data-add-bet>+ Add bet</button></div></div>
+        <div class="btn-row"><button class="btn" id="autoSettleBtn" title="Look up final scores and grade pending bets">⚡ Auto-settle</button><button class="btn" id="pasteSlipBtn">📷 Add from slip</button><button class="btn primary" data-add-bet>+ Add bet</button></div></div>
       <div class="card">
         <form class="filters" id="betFilters">
           <input type="search" name="q" placeholder="Search bets, players, notes…" value="${esc(params.get('q') || '')}">
@@ -2223,6 +2223,9 @@
       <div class="card" id="oddsKeyCard"><h2>🔑 Odds data</h2>
         <p class="muted small" style="margin-top:0">A free key from <a href="https://the-odds-api.com" target="_blank" rel="noopener">The Odds API</a> adds consensus lines, best prices and player props to the Market tab (500 free requests a month).</p>
         <form id="oddsKeyForm" class="btn-row"><input name="key" type="password" autocomplete="off" placeholder="Paste your Odds API key" value="${esc((state.settings || {}).oddsApiKey || '')}" style="flex:1;min-width:200px"><button class="btn primary" type="submit">Save key</button></form></div>
+      <div class="card" id="claudeKeyCard"><h2>📷 Reading bet slip screenshots</h2>
+        <p class="muted small" style="margin-top:0">Screenshots are read for free in your browser. For better accuracy (phone photos, parlays, unusual layouts), add a key from the <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Anthropic Console</a> and Claude reads them instead. It costs a few cents per slip, charged to your Anthropic account.</p>
+        <form id="claudeKeyForm" class="btn-row"><input name="key" type="password" autocomplete="off" placeholder="Paste your Claude API key (sk-ant-…)" value="${esc((state.settings || {}).claudeApiKey || '')}" style="flex:1;min-width:200px"><button class="btn primary" type="submit">Save key</button></form></div>
       ${updatesCardHtml()}
       <div class="grid cols-2 section">
         <div class="card"><h2>Export</h2><p class="muted">Download everything (bets, notes, team notes) as JSON, or your bets as a CSV spreadsheet.</p>
@@ -2241,6 +2244,11 @@
       await saveSettings({ oddsApiKey: e.target.key.value.trim() });
       state.market = {};
       toast(e.target.key.value.trim() ? 'Odds API key saved' : 'Odds API key removed');
+    });
+    document.getElementById('claudeKeyForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      await saveSettings({ claudeApiKey: e.target.key.value.trim() });
+      toast(e.target.key.value.trim() ? 'Claude key saved' : 'Claude key removed');
     });
     document.getElementById('bankrollForm').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -2309,7 +2317,7 @@
 
     modalForm.innerHTML = `
       <div class="card-head" style="margin-bottom:8px"><h2 style="margin:0">${editing ? 'Edit bet' : duplicate ? 'Duplicate bet' : bet && bet.fromSlip ? 'Check your bet slip' : 'Add a bet'}</h2>
-        ${editing || duplicate || (bet && bet.fromSlip) ? '' : '<button type="button" class="btn sm" data-paste-slip>📋 Paste a bet slip instead</button>'}</div>
+        ${editing || duplicate || (bet && bet.fromSlip) ? '' : '<button type="button" class="btn sm" data-paste-slip>📷 Use a bet slip instead</button>'}</div>
       ${bet && bet.fromSlip ? '<div class="alert small">Filled in from your bet slip. Check everything, especially teams for player props, then save.</div>' : ''}
       <div class="form-grid">
         <div class="field"><label>Date</label><input type="date" name="date" value="${esc(b.date)}" required></div>
@@ -2644,40 +2652,209 @@
 
   // ---------- bet slip import ----------
 
+  // Free text recognition for screenshots, loaded from a CDN the first time it's needed.
+  const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/tesseract.min.js';
+  let ocrWorker = null;
+  function loadOcr() {
+    if (!ocrWorker) {
+      ocrWorker = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = TESSERACT_URL;
+        s.onload = resolve;
+        s.onerror = () => reject(new Error("Couldn't load the text reader. Check the internet connection."));
+        document.head.appendChild(s);
+      })
+        .then(() => window.Tesseract.createWorker('eng'))
+        .catch((err) => {
+          ocrWorker = null;
+          throw err;
+        });
+    }
+    return ocrWorker;
+  }
+
+  // Shrink big screenshots before sending them to Claude (keeps uploads fast; text stays sharp).
+  function imageForClaude(file) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        const scale = Math.min(1, 2000 / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.naturalWidth * scale);
+        c.height = Math.round(img.naturalHeight * scale);
+        const g = c.getContext('2d');
+        g.fillStyle = '#fff';
+        g.fillRect(0, 0, c.width, c.height);
+        g.drawImage(img, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url);
+        resolve({ mediaType: 'image/jpeg', data: c.toDataURL('image/jpeg', 0.9).split(',')[1] });
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error(`${file.name || 'That file'} isn't an image this browser can open.`));
+      };
+      img.src = url;
+    });
+  }
+
+  const MAX_SLIP_IMAGES = 4;
+
   function openSlipImport(text = '') {
+    const hasClaude = !!(state.settings || {}).claudeApiKey;
     modalForm.innerHTML = `
-      <h2>📋 Paste a bet slip</h2>
-      <p class="muted small" style="margin-top:0">Copy the confirmation text from your sportsbook app or website (bet details, odds, wager) and paste it here. You'll check everything before it's saved.</p>
-      <textarea name="slip" rows="9" placeholder="e.g.
+      <h2>Add a bet from a slip</h2>
+      <p class="muted small" style="margin-top:0">Upload a screenshot of the bet from your sportsbook app, or paste the confirmation text. You'll check everything before it's saved.</p>
+      <label class="slip-drop" id="slipDrop">
+        <input type="file" id="slipFiles" accept="image/*" multiple>
+        <span class="slip-drop-title">Upload screenshots</span>
+        <span class="muted small">Tap to choose, drag them here, or paste an image. Up to ${MAX_SLIP_IMAGES} for a long parlay.</span>
+      </label>
+      <div class="slip-thumbs" id="slipThumbs"></div>
+      <div class="slip-reader muted small" id="slipReader">${
+        hasClaude
+          ? 'Screenshots are read by Claude.'
+          : 'Screenshots are read by the free text reader in your browser. For phone photos and tricky layouts, add a Claude key in <a href="#/settings">Settings</a>.'
+      }</div>
+      <div id="slipPreview"></div>
+      <details class="slip-text" ${text ? 'open' : ''}><summary>Or paste the slip text</summary>
+        <textarea name="slip" rows="7" placeholder="e.g.
 Kansas City Chiefs -3.5  -110
 Buffalo Bills @ Kansas City Chiefs
-Wager: $55.00   To Win: $50.00">${esc(text)}</textarea>
-      <div id="slipPreview"></div>
+Wager: $55.00   To Win: $50.00">${esc(text)}</textarea></details>
       <div class="modal-actions"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn" data-parse>Read slip</button><button type="button" class="btn primary" data-continue disabled>Continue to bet form</button></div>`;
     modalForm.onsubmit = (e) => e.preventDefault();
     wireModalClose();
     if (!modal.open) modal.showModal();
+
     let parsed = null;
+    let files = [];
+    let busy = false;
     const preview = modalForm.querySelector('#slipPreview');
     const go = modalForm.querySelector('[data-continue]');
-    const read = () => {
-      parsed = window.BetSlip.parseSlip(modalForm.slip.value);
+    const readBtn = modalForm.querySelector('[data-parse]');
+    const thumbs = modalForm.querySelector('#slipThumbs');
+    const drop = modalForm.querySelector('#slipDrop');
+    const textBox = modalForm.querySelector('.slip-text');
+
+    const showParsed = (p, note) => {
+      parsed = p;
       const bet = window.BetSlip.slipToBet(parsed);
       const row = (k, v) => (v === '' || v == null ? '' : `<dt>${k}</dt><dd>${v}</dd>`);
       const legLine = (l) => `<li>${esc(betTitle({ ...l, sport: l.sport || bet.sport }))} <span class="muted small">${esc([l.betType, l.odds != null && l.odds !== '' ? oddsStr(l.odds) : '', l.game || ''].filter(Boolean).join(' · '))}</span></li>`;
       preview.innerHTML = `<div class="slip-preview">
+        ${note ? `<div class="muted small" style="margin-bottom:6px">${note}</div>` : ''}
         <dl class="kv">${row('Bet type', esc(parsed.betType || '—'))}${row('Sportsbook', esc(parsed.book || ''))}${row('Odds', parsed.odds != null ? oddsStr(parsed.odds) : '')}${row('Stake', parsed.stake != null ? money(parsed.stake) : '')}${row('To win', parsed.toWin != null ? money(parsed.toWin) : '')}${row('Date', parsed.date ? fmtDate(parsed.date) : '')}</dl>
         ${parsed.legs.length ? `<div style="margin-top:6px"><strong>${parsed.legs.length > 1 ? `${parsed.legs.length} selections` : 'Selection'}</strong><ul class="slip-legs">${(bet.legs || [bet]).map(legLine).join('')}</ul></div>` : ''}
         ${parsed.warnings.map((w) => `<div class="alert small" style="margin:6px 0 0">${esc(w)}</div>`).join('')}</div>`;
       go.disabled = false;
     };
-    modalForm.querySelector('[data-parse]').addEventListener('click', read);
-    modalForm.slip.addEventListener('paste', () => setTimeout(read, 0));
+    const showError = (msg, retryFree) => {
+      preview.innerHTML = `<div class="alert error" style="margin-top:12px">${esc(msg)}${retryFree ? ' <button type="button" class="btn sm" data-free style="margin-left:6px">Use the free reader instead</button>' : ''}</div>`;
+      const b = preview.querySelector('[data-free]');
+      if (b) b.addEventListener('click', () => readImages(false));
+    };
+    const setBusy = (on, msg) => {
+      busy = on;
+      readBtn.disabled = on;
+      drop.classList.toggle('disabled', on);
+      if (on) preview.innerHTML = `<div class="slip-busy"><div class="spinner"></div><span>${esc(msg)}</span></div>`;
+    };
+
+    const renderThumbs = () => {
+      thumbs.innerHTML = files
+        .map((f, i) => `<div class="slip-thumb"><img src="${f.url}" alt="Screenshot ${i + 1}"><button type="button" class="slip-thumb-x" data-remove="${i}" aria-label="Remove screenshot ${i + 1}">×</button></div>`)
+        .join('');
+      thumbs.querySelectorAll('[data-remove]').forEach((b) =>
+        b.addEventListener('click', () => {
+          const [gone] = files.splice(Number(b.dataset.remove), 1);
+          URL.revokeObjectURL(gone.url);
+          renderThumbs();
+        })
+      );
+    };
+    const addFiles = (list) => {
+      const imgs = [...list].filter((f) => f.type.startsWith('image/'));
+      if (!imgs.length) return toast('Choose an image file (a screenshot of the bet).');
+      const room = MAX_SLIP_IMAGES - files.length;
+      if (imgs.length > room) toast(`Up to ${MAX_SLIP_IMAGES} screenshots per slip.`);
+      files.push(...imgs.slice(0, Math.max(0, room)).map((file) => ({ file, url: URL.createObjectURL(file) })));
+      renderThumbs();
+      if (files.length) readImages(hasClaude);
+    };
+
+    async function readImages(useClaude) {
+      if (!files.length || busy) return;
+      try {
+        if (useClaude) {
+          setBusy(true, 'Claude is reading the slip…');
+          const images = await Promise.all(files.map((f) => imageForClaude(f.file)));
+          const result = await api('POST', '/api/slip-read', { images });
+          setBusy(false);
+          showParsed(result);
+        } else {
+          setBusy(true, 'Loading the text reader…');
+          const worker = await loadOcr();
+          const texts = [];
+          for (let i = 0; i < files.length; i++) {
+            preview.querySelector('.slip-busy span').textContent = files.length > 1 ? `Reading screenshot ${i + 1} of ${files.length}…` : 'Reading the screenshot…';
+            texts.push((await worker.recognize(files[i].file)).data.text);
+          }
+          setBusy(false);
+          modalForm.slip.value = texts.join('\n');
+          textBox.querySelector('summary').textContent = 'Text the reader found';
+          showParsed(window.BetSlip.parseSlip(modalForm.slip.value), 'Read by the free text reader. If something is off, open "Text the reader found" below, fix it, and press Read slip.');
+        }
+      } catch (err) {
+        setBusy(false);
+        showError(err.message, useClaude);
+      }
+    }
+
+    const readText = () => {
+      if (!modalForm.slip.value.trim()) return;
+      showParsed(window.BetSlip.parseSlip(modalForm.slip.value));
+    };
+
+    modalForm.querySelector('#slipFiles').addEventListener('change', (e) => {
+      addFiles(e.target.files);
+      e.target.value = '';
+    });
+    drop.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      drop.classList.add('over');
+    });
+    drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+    drop.addEventListener('drop', (e) => {
+      e.preventDefault();
+      drop.classList.remove('over');
+      addFiles(e.dataTransfer.files);
+    });
+    modalForm.addEventListener('paste', (e) => {
+      const imgs = [...(e.clipboardData ? e.clipboardData.files : [])].filter((f) => f.type.startsWith('image/'));
+      if (imgs.length) {
+        e.preventDefault();
+        addFiles(imgs);
+      } else if (e.target === modalForm.slip) {
+        setTimeout(readText, 0);
+      }
+    });
+    readBtn.addEventListener('click', () => {
+      const hasText = !!modalForm.slip.value.trim();
+      if (hasText && (textBox.open || !files.length)) readText();
+      else if (files.length) readImages(hasClaude);
+      else toast('Add a screenshot or paste the slip text first.');
+    });
+    modal.addEventListener('close', () => files.forEach((f) => URL.revokeObjectURL(f.url)), { once: true });
     go.addEventListener('click', () => {
-      if (!parsed) read();
+      if (!parsed) readText();
+      if (!parsed) return;
       openBetForm({ ...window.BetSlip.slipToBet(parsed), fromSlip: true });
     });
-    modalForm.slip.focus();
+    if (text) {
+      modalForm.slip.focus();
+      readText();
+    }
   }
 
   // ---------- auto-settle ----------

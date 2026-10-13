@@ -339,7 +339,9 @@ dialog h2 { font-size: 1.6rem; }
   .page-head { margin-bottom: 18px; }
   .page-head .btn-row { width: 100%; }
   dialog form { padding: 18px; }
-  .modal-actions { margin: 12px -18px -18px; padding: 12px 18px; bottom: -18px; }
+  .modal-actions { margin: 12px -18px -18px; padding: 12px 18px; bottom: -18px; flex-wrap: wrap; }
+  .modal-actions .btn { flex: 1 1 auto; }
+  .modal-actions .btn.primary { flex-basis: 100%; order: 3; }
 }
 .show-sm { display: none; }
 @media (max-width: 640px) { .show-sm { display: inline; } }
@@ -578,3 +580,30 @@ dialog.wide { width: min(980px, calc(100vw - 24px)); }
   .group-table .meter .bar { display: none; }
   .group-table th, .group-table td { padding-left: 8px; padding-right: 8px; }
 }
+
+/* ---------- bet slip upload ---------- */
+.slip-drop {
+  position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  margin: 4px 0 0; padding: 22px 16px; text-align: center; cursor: pointer;
+  border: 2px dashed var(--border-strong); border-radius: var(--radius); background: var(--surface-2);
+  transition: border-color .12s, background .12s;
+}
+.slip-drop:hover, .slip-drop.over { border-color: var(--accent); background: var(--accent-soft); }
+.slip-drop:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.slip-drop.disabled { pointer-events: none; opacity: .6; }
+.slip-drop input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.slip-drop-title { font-family: var(--font-display); font-weight: 600; font-size: 1.2rem; color: var(--text); }
+.slip-thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.slip-thumbs:empty { display: none; }
+.slip-thumb { position: relative; width: 72px; height: 96px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); background: var(--surface-2); }
+.slip-thumb img { width: 100%; height: 100%; object-fit: cover; object-position: top; display: block; }
+.slip-thumb-x {
+  position: absolute; top: 3px; right: 3px; width: 22px; height: 22px; border-radius: 50%; border: 0; cursor: pointer;
+  background: rgba(8, 13, 24, .75); color: #fff; font-size: 15px; line-height: 22px; padding: 0;
+}
+.slip-reader { margin: 10px 0 2px; }
+.slip-text { margin-top: 10px; }
+.slip-text > summary { cursor: pointer; font-weight: 500; color: var(--accent); padding: 4px 0; }
+.slip-text textarea { margin-top: 6px; }
+.slip-busy { display: flex; align-items: center; gap: 12px; margin-top: 14px; color: var(--text-2); }
+.slip-busy .spinner { margin: 0; flex: none; }

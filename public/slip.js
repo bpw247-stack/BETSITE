@@ -140,7 +140,7 @@
   function parseSlip(text, leagues) {
     const idx = teamIndex(leagues || (root && root.LEAGUES));
     const clean = String(text || '').replace(/[−–—]/g, '-').replace(/ /g, ' ');
-    const lines = clean.split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+    const lines = joinLines(clean.split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean), idx);
     const all = lines.join('\n');
     const out = { warnings: [], legs: [] };
 
@@ -168,6 +168,14 @@
       if (/wager|stake|payout|to win:|potential|bet id|ticket|placed|cash ?out|odds boost|receipt/i.test(line) && !propCategory(line)) continue;
       const sel = parseSelection(line, idx);
       if (!sel) continue;
+      // a prop whose "Under 48.5 -115" sits on the next line
+      const bare = sel.betType === 'Player Prop' && sel.line == null && lines[i + 1] && BARE_OU.exec(lines[i + 1]);
+      if (bare) {
+        sel.side = /^o/i.test(bare[1]) ? 'Over' : 'Under';
+        sel.line = Number(bare[2]);
+        if (bare[3]) sel.odds = Number(bare[3]);
+        i++;
+      }
       // context from the next few lines (until the next selection): matchup ("Bills @ Chiefs") and odds
       for (let j = i + 1; j <= i + 3 && j < lines.length; j++) {
         const next = lines[j];
@@ -184,6 +192,29 @@
       return !seen.has(k) && seen.add(k);
     });
     return finish(out, lines, all);
+  }
+
+  const BARE_OU = /^(over|under|o|u)\s*(\d+(?:\.\d+)?)(?:\s+([+-]\d{3,5}))?$/i;
+  const NAME_RE = /^[A-Z][A-Za-z.'-]+(?:\s+(?:[A-Z][A-Za-z.'-]+|Jr\.?|Sr\.?|II|III|IV)){1,3}$/;
+
+  // Undo line breaks that split one selection, which is common in screenshots:
+  // "Nikola Jokic - Points + Rebounds +" / "Assists", and
+  // "Josh Allen  +105" / "Over 249.5 Passing Yards".
+  function joinLines(lines, idx) {
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i];
+      while (/(?:\s[+&,-]|\band)$/i.test(line) && i + 1 < lines.length) line = `${line} ${lines[++i]}`;
+      const next = lines[i + 1];
+      const odds = oddsTokens(line);
+      const name = line.replace(/(?:^|\s)[+-]\d{3,5}(?=\s|$)/g, '').trim();
+      if (next && NAME_RE.test(name) && !findTeams(name, idx).length && !propCategory(name) && (propCategory(next) || BARE_OU.test(next) || /^(over|under)\s+\d/i.test(next)) && !BOOKS.some(([, re]) => re.test(name)) && !NAME_RE.test(next.split(/\s[-:]\s|\s+(?:over|under|o|u)\s*\d/i)[0])) {
+        line = `${name} ${next}${odds.length && !oddsTokens(next).length ? ` ${odds[odds.length - 1] > 0 ? '+' : ''}${odds[odds.length - 1]}` : ''}`;
+        i++;
+      }
+      out.push(line);
+    }
+    return out;
   }
 
   function applyContext(sel, next, idx) {

@@ -420,6 +420,48 @@ async function autoSettle() {
   return { checked: jobs.length, results };
 }
 
+// ---------- player prop research ----------
+
+async function propResearch(league, team, player, prop, line, side, opp) {
+  if (grading.statForProp(league, prop, {}) === undefined) throw Object.assign(new Error(`"${prop}" isn't a stat the site can look up`), { status: 400 });
+  const season = niche.nicheSeasons(league).slice(-1)[0];
+  let games = [];
+  for (const s of [season, season - 1]) {
+    const payloads = await getTeamSeasonSchedule(league, team, s);
+    games = games.concat(payloads.flatMap((p) => niche.gamesFromSchedule(p, team)));
+    if (games.length >= 14) break;
+  }
+  const seen = new Set();
+  games = games.filter((g) => !seen.has(g.id) && seen.add(g.id)).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 16);
+  const rows = (
+    await pool(games, 4, async (g) => {
+      try {
+        const box = await getBoxScore(league, g.id);
+        const p = grading.findPlayer(box, player, team);
+        if (!p) return { date: g.date, opp: g.opp, home: g.home, value: null, dnp: true };
+        const v = grading.statForProp(league, prop, p.stats);
+        return { date: g.date, opp: g.opp, home: g.home, value: v == null ? 0 : v, name: p.name };
+      } catch {
+        return null;
+      }
+    })
+  ).filter(Boolean);
+  const name = (rows.find((r) => r.name) || {}).name || null;
+  if (!name) throw Object.assign(new Error(`Couldn't find ${player} in ${team}'s recent box scores. Check the spelling and the team.`), { status: 404 });
+  // last 10 games the player actually played (keep DNPs in between for context)
+  const out = [];
+  let played = 0;
+  for (const r of rows) {
+    if (played >= 10) break;
+    out.push(r);
+    if (!r.dnp) played++;
+  }
+  const l = line === '' || line == null ? grading.defaultLine(league, prop) : Number(line);
+  const summary = grading.propResearchSummary(out, l, side);
+  const vsOpp = opp ? out.filter((r) => r.opp === opp && !r.dnp) : [];
+  return { player: name, team, prop, line: l, side: side || 'Over', games: out, summary, vsOpp };
+}
+
 // ---------- API ----------
 
 async function handleApi(req, res, url) {
@@ -515,6 +557,21 @@ async function handleApi(req, res, url) {
         [b]: rb.status === 'fulfilled' ? rb.value : { abbr: b, error: rb.reason.message },
       },
     });
+  }
+
+  if (resource === 'propresearch') {
+    const league = (id || '').toLowerCase();
+    if (!LEAGUE_PATHS[league]) return send(res, 404, { error: 'Unknown league' });
+    const q = url.searchParams;
+    const team = String(q.get('team') || '').toUpperCase();
+    if (!/^[A-Z]{2,4}$/.test(team)) return send(res, 400, { error: "Pick the player's team first" });
+    if (!q.get('player')) return send(res, 400, { error: 'Enter the player first' });
+    if (!q.get('prop')) return send(res, 400, { error: 'Enter the prop category first' });
+    try {
+      return send(res, 200, await propResearch(league, team, q.get('player'), q.get('prop'), q.get('line'), q.get('side'), String(q.get('opp') || '').toUpperCase()));
+    } catch (err) {
+      return send(res, err.status || 502, { error: err.message });
+    }
   }
 
   if (resource === 'autosettle' && req.method === 'POST') {

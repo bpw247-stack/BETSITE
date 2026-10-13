@@ -686,6 +686,7 @@
           ${notesLogHtml(b.notes, 'Why you made this pick, line movement, what happened…')}</div>
       </div>
       ${legsCard}
+      ${b.betType === 'Player Prop' && b.player && window.LEAGUES[b.sport] ? '<div class="card section"><h2>🔍 Prop research</h2><div id="betResearch"></div></div>' : ''}
       ${injurySports
         .map((sp) => `<div class="card section"><div class="card-head"><h2>${injurySports.length > 1 ? esc(sp) + ' injury' : 'Injury'} report</h2><a href="#/injuries?league=${sp.toLowerCase()}">Full ${esc(sp)} report</a></div><div data-injuries="${esc(sp)}"></div></div>`)
         .join('')}`;
@@ -708,6 +709,8 @@
       () => (state.bets.find((x) => x.id === id) || {}).notes,
       (notes) => saveBet({ ...state.bets.find((x) => x.id === id), notes })
     );
+    const br = document.getElementById('betResearch');
+    if (br) showResearch(br, { sport: b.sport, team: b.team, player: b.player, prop: b.propCategory, line: b.line, side: b.side, opp: b.opponent });
     for (const sp of injurySports) {
       renderTeamInjuriesInto(app.querySelector(`[data-injuries="${CSS.escape(sp)}"]`), sp, injuryGroups[sp].teams, injuryGroups[sp].players);
     }
@@ -1758,6 +1761,7 @@
           <datalist id="propList"></datalist></div>
         <div class="field" data-show="side"><label>Side</label><select name="side">${sel(window.SIDES, b.side || '')}</select></div>
         <div class="field" data-show="line"><label>Line</label><input name="line" type="number" step="0.5" value="${esc(b.line ?? '')}" placeholder="e.g. -3.5 or 24.5"></div>
+        <div class="field full" data-show="player"><button type="button" class="btn sm" id="researchBtn">🔍 Research this prop</button> <span class="muted small">recent games vs your line</span><div id="researchOut"></div></div>
         <div class="field full" data-show="legs">
           <label>Parlay legs</label>
           <div id="legsEditor"></div>
@@ -1813,7 +1817,7 @@
               ${fld('Line', `<input data-k="line" type="number" step="0.5" value="${esc(l.line ?? '')}" placeholder="e.g. -3.5">`, sh.line)}
               ${fld('Odds <span class="muted">(optional)</span>', `<input data-k="odds" type="number" step="1" value="${esc(l.odds ?? '')}" placeholder="e.g. -110">`)}
               ${fld('Result', `<select data-k="result">${sel(['pending', 'won', 'lost', 'push'], l.result || 'pending')}</select>`)}
-            </div></div>`;
+            </div>${sh.player ? `<div class="leg-research"><button type="button" class="btn sm" data-leg-research="${i}">🔍 Research this leg</button><div class="leg-research-out"></div></div>` : ''}</div>`;
         })
         .join('');
       updateParlay();
@@ -1849,6 +1853,12 @@
       updateParlay();
     });
     legsEl.addEventListener('click', (e) => {
+      const rb = e.target.closest('[data-leg-research]');
+      if (rb) {
+        const l = legs[Number(rb.dataset.legResearch)];
+        showResearch(rb.nextElementSibling, { sport: l.sport, team: l.team, player: (l.player || '').trim(), prop: (l.propCategory || '').trim(), line: l.line, side: l.side, opp: l.opponent });
+        return;
+      }
       const rm = e.target.closest('[data-remove-leg]');
       if (!rm) return;
       legs.splice(Number(rm.dataset.removeLeg), 1);
@@ -1929,6 +1939,9 @@
       team = opp = '';
       sync();
     });
+    f.querySelector('#researchBtn').addEventListener('click', () =>
+      showResearch(f.querySelector('#researchOut'), { sport: f.sport.value, team: f.team.value, player: f.player.value.trim(), prop: f.propCategory.value.trim(), line: f.line.value, side: f.side.value, opp: f.opponent.value })
+    );
     f.betType.addEventListener('change', sync);
     f.odds.addEventListener('input', () => {
       oddsTouched = true;
@@ -2016,6 +2029,53 @@
   });
 
   document.getElementById('addBetBtn').addEventListener('click', () => openBetForm());
+
+  // ---------- player prop research ----------
+
+  const researchCache = {};
+  function loadResearch(q) {
+    const params = new URLSearchParams({ team: q.team || '', player: q.player || '', prop: q.prop || '', line: q.line ?? '', side: q.side || '', opp: q.opp || '' });
+    const key = `${q.sport}:${params}`;
+    if (!researchCache[key]) {
+      researchCache[key] = api('GET', `/api/propresearch/${String(q.sport || '').toLowerCase()}?${params}`).catch((err) => {
+        delete researchCache[key];
+        throw err;
+      });
+    }
+    return researchCache[key];
+  }
+
+  function researchHtml(d) {
+    const s = d.summary;
+    const side = d.side === 'Under' || d.side === 'No' ? d.side : 'Over';
+    const played = d.games.filter((g) => !g.dnp).slice().reverse(); // oldest -> newest for the chart
+    const max = Math.max(1, d.line || 0, ...played.map((g) => g.value)) * 1.12;
+    const bars = played
+      .map((g) => `<div class="pr-col" title="${esc(fmtDate(g.date.slice(0, 10)))} ${g.home ? 'vs' : '@'} ${esc(g.opp)}: ${g.value}">
+          <div class="pr-bar ${g.result === 'won' ? 'hit' : g.result === 'lost' ? 'miss' : 'push'}" style="height:${Math.max(2, (g.value / max) * 100)}%"><span>${g.value}</span></div>
+          <div class="pr-lbl">${g.home ? '' : '@'}${esc(g.opp)}</div></div>`)
+      .join('');
+    const hitRate = s.hits + s.misses ? s.hits / (s.hits + s.misses) : null;
+    const dnps = d.games.filter((g) => g.dnp).length;
+    return `<div class="pr">
+      <div class="pr-head"><strong>${esc(d.player)}</strong> · ${esc(d.prop)}${d.line != null ? ` · ${esc(side)} ${esc(d.line)}` : ''}</div>
+      ${d.line != null ? `<div class="pr-stat ${hitRate == null ? '' : hitRate >= 0.6 ? 'pos' : hitRate <= 0.4 ? 'neg' : ''}">${esc(side)} ${esc(d.line)} hit in <strong>${s.hits} of ${s.hits + s.misses + s.pushes}</strong> recent games${hitRate != null ? ` (${pct(hitRate)})` : ''}${s.pushes ? `, ${s.pushes} push` : ''}</div>` : ''}
+      <div class="muted small">Average <strong>${s.avg ?? '—'}</strong> · median ${s.median ?? '—'} · high ${s.high ?? '—'} · low ${s.low ?? '—'}${dnps ? ` · missed ${plural(dnps, 'game')}` : ''}</div>
+      ${played.length ? `<div class="pr-chart" role="img" aria-label="${esc(d.player)} ${esc(d.prop)} in his last ${played.length} games: ${played.map((g) => g.value).join(', ')}">
+        ${d.line != null ? `<div class="pr-line" style="bottom:${18 + (d.line / max) * 105.6}px"><span>${esc(d.line)}</span></div>` : ''}
+        ${bars}</div>` : ''}
+      ${d.vsOpp.length ? `<div class="small" style="margin-top:6px">vs this opponent: ${d.vsOpp.map((g) => `<strong>${g.value}</strong> <span class="muted">(${esc(fmtDate(g.date.slice(0, 10)))})</span>`).join(', ')}</div>` : ''}
+      <div class="muted small" style="margin-top:4px">Last ${plural(played.length, 'game')} played, oldest to newest. Source: ESPN box scores.</div></div>`;
+  }
+
+  async function showResearch(el, q) {
+    el.innerHTML = '<div class="muted small">Looking up recent games… (first time can take ~15 seconds)</div>';
+    try {
+      el.innerHTML = researchHtml(await loadResearch(q));
+    } catch (err) {
+      el.innerHTML = `<div class="alert small">${esc(err.message)}</div>`;
+    }
+  }
 
   // ---------- auto-settle ----------
 

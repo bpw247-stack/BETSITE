@@ -335,3 +335,23 @@ dialog.wide { width: min(980px, calc(100vw - 32px)); }
 .settle-item > span:first-of-type, .settle-item > span:nth-child(2) { flex: 1; min-width: 0; }
 .settle-title { display: block; font-weight: 600; }
 .settle-item > span:not(.badge) { flex: 1; min-width: 0; }
+
+/* ---------- prop research ---------- */
+.pr { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-top: 8px; background: var(--surface); }
+.pr-head { margin-bottom: 2px; }
+.pr-stat { font-size: .95rem; margin: 2px 0; }
+.pr-chart { position: relative; display: flex; align-items: flex-end; gap: 4px; height: 150px; margin-top: 10px; padding-bottom: 18px; }
+.pr-col { flex: 1; min-width: 0; height: 80%; display: flex; flex-direction: column; justify-content: flex-end; align-items: stretch; position: relative; }
+.pr-bar { border-radius: 4px 4px 0 0; position: relative; min-height: 2px; }
+.pr-bar.hit { background: var(--good); }
+.pr-bar.miss { background: var(--bad); }
+.pr-bar.push { background: var(--muted); }
+.pr-bar span { position: absolute; top: -16px; left: 0; right: 0; text-align: center; font-size: .7rem; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.pr-lbl { position: absolute; bottom: -17px; left: 0; right: 0; text-align: center; font-size: .66rem; color: var(--muted); white-space: nowrap; overflow: hidden; }
+.pr-line { position: absolute; left: 0; right: 0; border-top: 2px dashed var(--text-2); z-index: 1; pointer-events: none; }
+.pr-line span { position: absolute; right: 0; top: -16px; font-size: .7rem; background: var(--surface); padding: 0 4px; color: var(--text-2); }
+.leg-research { padding: 0 0 10px; }
+.pr-chart { padding-right: 46px; }
+.pr-line { right: 0; }
+.pr-line span { right: 0; top: -9px; }
+.pr-bar span { z-index: 2; }

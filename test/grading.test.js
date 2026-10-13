@@ -99,3 +99,15 @@ test('findGameForPick picks the right game near the bet date', () => {
   assert.strictEqual(G.seasonForDate('nfl', '2026-01-10'), 2025);
   assert.strictEqual(G.seasonForDate('nba', '2026-10-25'), 2027);
 });
+
+test('propResearchSummary computes hit rate, average and median', () => {
+  const games = [{ value: 300 }, { value: 250 }, { value: null, dnp: true }, { value: 275.5 }, { value: 310 }];
+  const s = G.propResearchSummary(games, 275.5, 'Over');
+  assert.deepStrictEqual([s.n, s.hits, s.misses, s.pushes], [4, 2, 1, 1]);
+  assert.strictEqual(s.avg, 283.9);
+  assert.strictEqual(s.median, 287.75);
+  assert.deepStrictEqual([s.high, s.low], [310, 250]);
+  assert.strictEqual(games[0].result, 'won');
+  const u = G.propResearchSummary([{ value: 3 }, { value: 7 }], 5.5, 'Under');
+  assert.deepStrictEqual([u.hits, u.misses], [1, 1]);
+});

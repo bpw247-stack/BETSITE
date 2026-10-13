@@ -174,7 +174,30 @@
     return { type, length };
   }
 
-  const api = { kellyFraction, bankrollNow, winProfit, toDecimal, toAmerican, parlayOdds, parlayResult, picks, betProfit, impliedProbability, summarize, groupStats, cumulative, streak };
+  // Rank groups (from groupStats) by how far they sit from a coin flip, weighted by sample size,
+  // so 12-3 beats 2-0. Returns { strengths, weaknesses } with at least `min` decided picks each.
+  function takeaways(groups, { min = 5, limit = 3 } = {}) {
+    const scored = groups
+      .filter((g) => g.won + g.lost >= min)
+      .map((g) => ({ ...g, score: (g.winRate - 0.5) * Math.sqrt(g.won + g.lost) }));
+    return {
+      strengths: scored.filter((g) => g.winRate > 0.5).sort((a, b) => b.score - a.score).slice(0, limit),
+      weaknesses: scored.filter((g) => g.winRate < 0.5).sort((a, b) => a.score - b.score).slice(0, limit),
+    };
+  }
+
+  // Odds buckets for "where do you win" breakdowns.
+  function oddsBucket(odds) {
+    const o = Number(odds);
+    if (!isFinite(o) || Math.abs(o) < 100) return null;
+    if (o <= -200) return 'Heavy favorite (-200 or shorter)';
+    if (o < -100) return 'Favorite (-199 to -101)';
+    if (o <= 150) return 'Near even (-100 to +150)';
+    if (o <= 300) return 'Underdog (+151 to +300)';
+    return 'Long shot (+301 or longer)';
+  }
+
+  const api = { takeaways, oddsBucket, kellyFraction, bankrollNow, winProfit, toDecimal, toAmerican, parlayOdds, parlayResult, picks, betProfit, impliedProbability, summarize, groupStats, cumulative, streak };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BetStats = api;
 })(typeof window !== 'undefined' ? window : globalThis);

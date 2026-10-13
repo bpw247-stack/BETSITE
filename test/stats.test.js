@@ -115,3 +115,15 @@ test('kellyFraction and bankrollNow', () => {
   assert.strictEqual(S.bankrollNow({ bankroll: 1000, trackProfit: false }, bets), 1000);
   assert.strictEqual(S.bankrollNow({}, bets), null);
 });
+
+test('takeaways ranks by edge and sample size; oddsBucket', () => {
+  const g = (key, won, lost) => ({ key, won, lost, winRate: won / (won + lost) });
+  const t = S.takeaways([g('big sample', 12, 3), g('tiny', 2, 0), g('cold', 4, 11), g('meh', 5, 5)]);
+  assert.deepStrictEqual(t.strengths.map((x) => x.key), ['big sample']);
+  assert.deepStrictEqual(t.weaknesses.map((x) => x.key), ['cold']);
+  assert.strictEqual(S.oddsBucket(-250), 'Heavy favorite (-200 or shorter)');
+  assert.strictEqual(S.oddsBucket(-110), 'Favorite (-199 to -101)');
+  assert.strictEqual(S.oddsBucket(120), 'Near even (-100 to +150)');
+  assert.strictEqual(S.oddsBucket(450), 'Long shot (+301 or longer)');
+  assert.strictEqual(S.oddsBucket(''), null);
+});

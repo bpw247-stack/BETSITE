@@ -201,6 +201,7 @@
     bets: renderBets,
     bet: renderBetDetail,
     props: renderProps,
+    insights: renderInsights,
     teams: renderTeams,
     team: renderTeamDetail,
     injuries: renderInjuries,
@@ -736,6 +737,68 @@
     app.querySelectorAll('#sportTabs button').forEach((btn) =>
       btn.addEventListener('click', () => (location.hash = '#/props' + (btn.dataset.v ? '?sport=' + btn.dataset.v : '')))
     );
+    wireCommon();
+  }
+
+  // ---------- insights ----------
+
+  const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const typeLabel = (b) => ({ 'Player Prop': 'player props', 'Game Prop': 'game props', Moneyline: 'moneylines', Spread: 'spreads', Total: 'totals', Parlay: 'parlays', Future: 'futures' }[b.betType] || 'other bets');
+  const sideLabel = (b) => (b.side ? { Over: 'overs', Under: 'unders', Yes: '"yes" props', No: '"no" props' }[b.side] : '');
+
+  function renderInsights(_, params) {
+    const sport = params.get('sport') || '';
+    const bets = state.bets.filter((b) => !sport || b.sport === sport);
+    const picks = S.picks(bets).filter((x) => !sport || x.sport === sport);
+    const straight = bets.filter((b) => !hasLegs(b));
+    const decided = picks.filter((x) => x.result === 'won' || x.result === 'lost').length;
+
+    // what you bet on: sport + type (+ side for totals/props)
+    const byWhat = S.groupStats(picks, (x) => {
+      const side = (x.betType === 'Total' || isProp(x)) && sideLabel(x);
+      return side ? `${x.sport} ${isProp(x) ? (x.betType === 'Player Prop' ? 'player prop ' : 'game prop ') : ''}${side}` : `${x.sport} ${typeLabel(x)}`;
+    });
+    const byPropSide = S.groupStats(picks.filter(isProp), (x) => `${x.propCategory || 'Uncategorized'}${x.side ? ' ' + x.side.toLowerCase() : ''}`);
+    const byDay = S.groupStats(bets, (b) => (b.date ? DAYS[new Date(b.date + 'T12:00:00').getDay()] : null)).sort((a, b) => DAYS.indexOf(a.key) - DAYS.indexOf(b.key));
+    const byBook = S.groupStats(bets, (b) => b.book || 'No sportsbook entered');
+    const byFav = S.groupStats(straight, (b) => (Number(b.odds) < 0 ? 'Favorites (minus odds)' : Number(b.odds) > 0 ? 'Underdogs (plus odds)' : null));
+    const BUCKET_ORDER = ['Heavy', 'Favorite', 'Near', 'Underdog', 'Long'];
+    const byOdds = S.groupStats(straight, (b) => S.oddsBucket(b.odds)).sort((a, b) => BUCKET_ORDER.findIndex((k) => a.key.startsWith(k)) - BUCKET_ORDER.findIndex((k) => b.key.startsWith(k)));
+    const stakes = bets.map((b) => Number(b.stake) || 0).sort((a, b) => a - b);
+    const median = stakes.length ? stakes[Math.floor(stakes.length / 2)] : 0;
+    const byStake = S.groupStats(bets, (b) => (Number(b.stake) > median * 1.5 ? 'Bigger than usual' : Number(b.stake) < median * 0.67 ? 'Smaller than usual' : 'Your usual size'));
+    const byFormat = S.groupStats(bets, (b) => (hasLegs(b) ? `Parlay (${b.legs.length >= 4 ? '4+' : b.legs.length} legs)` : 'Straight bet'));
+    // which kinds of legs sink your parlays
+    const lostLegs = bets.filter((b) => hasLegs(b) && b.result === 'lost').flatMap((b) => b.legs.filter((l) => l.result === 'lost'));
+    const killers = Object.entries(lostLegs.reduce((m, l) => ((m[isProp(l) ? `${l.propCategory || 'Prop'}` : l.betType] = (m[isProp(l) ? `${l.propCategory || 'Prop'}` : l.betType] || 0) + 1), m), {})).sort((a, b) => b[1] - a[1]);
+
+    const t = S.takeaways([...byWhat, ...byPropSide.map((g) => ({ ...g, key: g.key + ' props' })), ...byDay.map((g) => ({ ...g, key: 'bets placed on ' + g.key + 's' })), ...byFav.map((g) => ({ ...g, key: g.key.toLowerCase() }))]);
+    const line = (g, good) =>
+      `<li class="${good ? 'pos' : 'neg'}">${good ? '🔥' : '🧊'} You're <strong>${record(g)}</strong> (${pct(g.winRate)}) on <strong>${esc(g.key)}</strong>${g.staked ? ` · ${plHtml(g.profit)}` : ''}</li>`;
+
+    const card = (title, groups, hint) => `<div class="card"><h2>${title}</h2>${hint ? `<div class="muted small" style="margin:-6px 0 8px">${hint}</div>` : ''}${groupTable(groups, { empty: 'Not enough bets yet.' })}</div>`;
+    app.innerHTML = `
+      <div class="page-head"><div><h1>Insights</h1><div class="muted">Where you win and lose, from your own betting history.</div></div>
+        <div class="tabs" id="sportTabs">${['', 'NFL', 'NBA'].map((v) => `<button data-v="${v}" class="${v === sport ? 'active' : ''}">${v || 'All'}</button>`).join('')}</div></div>
+      ${decided < 10 ? `<div class="alert">You have ${plural(decided, 'settled pick')} so far. Insights get meaningful after 20–30, so treat these as early signals.</div>` : ''}
+      <div class="grid cols-2">
+        <div class="card"><h2>🔥 What's working</h2>${t.strengths.length ? `<ul class="takeaways">${t.strengths.map((g) => line(g, true)).join('')}</ul>` : '<div class="muted">Nothing stands out yet (needs at least 5 settled picks in a category).</div>'}</div>
+        <div class="card"><h2>🧊 What's not</h2>${t.weaknesses.length ? `<ul class="takeaways">${t.weaknesses.map((g) => line(g, false)).join('')}</ul>` : '<div class="muted">Nothing stands out yet.</div>'}</div>
+      </div>
+      <p class="muted small">At typical -110 odds you need to win about <strong>52.4%</strong> to break even. Parlay legs count toward records but not money.</p>
+      <div class="insight-tables section">
+        ${card('By what you bet', byWhat)}
+        ${card('Props by category & side', byPropSide)}
+        ${card('By day you placed the bet', byDay)}
+        ${card('By sportsbook', byBook)}
+        ${card('Favorites vs underdogs', byFav, 'Straight bets only.')}
+        ${card('By odds', byOdds, 'Straight bets only.')}
+        ${card('By bet size', byStake, median ? `Compared with your typical stake (${money(median)}).` : '')}
+        ${card('Straight bets vs parlays', byFormat)}
+      </div>
+      <div class="card section"><h2>💔 Legs that sank your parlays</h2>
+        ${killers.length ? `<div class="btn-row">${killers.map(([k, n]) => `<span class="chip">${esc(k)}: ${n}</span>`).join('')}</div><div class="muted small" style="margin-top:6px">Losing legs in parlays you lost, by type. Frequent offenders might be better as straight bets, or left out.</div>` : '<div class="muted">No lost parlays with legs entered yet.</div>'}</div>`;
+    app.querySelectorAll('#sportTabs button').forEach((btn) => btn.addEventListener('click', () => (location.hash = '#/insights' + (btn.dataset.v ? '?sport=' + btn.dataset.v : ''))));
     wireCommon();
   }
 

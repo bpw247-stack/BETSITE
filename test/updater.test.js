@@ -123,3 +123,38 @@ test('apply refuses an incomplete download and changes nothing', async () => {
   assert.strictEqual(fs.readFileSync(path.join(appDir, 'server.js'), 'utf8'), 'old server');
   await assert.rejects(updater.apply('not-a-sha'), /Invalid/);
 });
+
+test('when api.github.com is unreachable, check and apply fall back to github.com', async () => {
+  const { appDir, dataDir } = setup(GOOD);
+  const zip = makeZip(GOOD);
+  const seen = [];
+  const blockedApi = async (url) => {
+    seen.push(url);
+    if (url.includes('api.github.com')) throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ENOTFOUND' } });
+    if (url.endsWith('.atom'))
+      return new Response(`<?xml version="1.0"?><feed><entry><id>tag:github.com,2008:Grit::Commit/${SHA_NEW}</id><updated>2026-10-15T12:00:00Z</updated><title>Add floating notes &amp; more</title></entry><entry><id>tag:github.com,2008:Grit::Commit/${SHA_OLD}</id><updated>2026-10-14T12:00:00Z</updated><title>Older</title></entry></feed>`);
+    if (url.includes('/archive/')) return new Response(zip);
+    return new Response('nope', { status: 404 });
+  };
+  const updater = createUpdater({ appDir, dataDir, fetchImpl: blockedApi });
+  fs.writeFileSync(path.join(dataDir, 'version.json'), JSON.stringify({ sha: SHA_OLD }));
+  const c = await updater.check();
+  assert.strictEqual(c.latest, SHA_NEW);
+  assert.deepStrictEqual(c.changes.map((x) => x.message), ['Add floating notes & more']);
+  const r = await updater.apply(SHA_NEW);
+  assert.strictEqual(r.sha, SHA_NEW);
+  assert.strictEqual(fs.readFileSync(path.join(appDir, 'server.js'), 'utf8'), 'new server');
+  assert.ok(seen.some((u) => u.includes(`/archive/${SHA_NEW}.zip`)));
+});
+
+test('a connection failure says why instead of "fetch failed"', async () => {
+  const { appDir, dataDir } = setup(GOOD);
+  const down = async () => {
+    throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY' } });
+  };
+  const updater = createUpdater({ appDir, dataDir, fetchImpl: down });
+  await assert.rejects(updater.check(), (err) => /security certificate/.test(err.message) && /UNABLE_TO_GET_ISSUER_CERT_LOCALLY/.test(err.message) && !/^fetch failed$/.test(err.message));
+  const { networkError } = require('../lib/updater');
+  assert.match(networkError({ cause: { code: 'ENOTFOUND' } }, 'https://api.github.com/x').message, /Couldn't look up api\.github\.com/);
+  assert.match(networkError({ cause: { code: 'ECONNRESET' } }, 'https://api.github.com/x').message, /Couldn't connect to api\.github\.com/);
+});

@@ -239,6 +239,7 @@
     }
     hideTooltip();
     views[view](parts.slice(1), params);
+    syncFab();
   }
   window.addEventListener('hashchange', () => {
     render();
@@ -2455,9 +2456,9 @@
         .map(
           (n) => `<div class="note ${n.pinned ? 'pinned' : ''}">
             <div class="note-head"><span class="note-title">${n.pinned ? '📌 ' : ''}${esc(n.title || 'Untitled')}</span>
-              <span class="btn-row"><button class="btn sm" data-edit="${esc(n.id)}">Edit</button><button class="btn sm danger" data-del="${esc(n.id)}">Delete</button></span></div>
+              <span class="btn-row"><button class="btn sm" data-float="${esc(n.id)}" title="Keep writing in a floating note">Continue</button><button class="btn sm" data-edit="${esc(n.id)}">Edit</button><button class="btn sm danger" data-del="${esc(n.id)}">Delete</button></span></div>
             <div class="note-body">${esc(n.body)}</div>
-            <div class="note-meta" style="margin-top:6px">${(n.tags || []).map((t) => `<a class="chip" href="#/notes?tag=${encodeURIComponent(t)}">${esc(t)}</a>`).join(' ')} ${fmtDateTime(n.updatedAt)}</div>
+            <div class="note-meta" style="margin-top:6px">${(n.tags || []).map((t) => `<a class="chip" href="#/notes?tag=${encodeURIComponent(t)}">${esc(t)}</a>`).join(' ')} ${n.context && n.context.href ? `From <a href="${esc(n.context.href)}">${esc(n.context.label)}</a> · ` : ''}${fmtDateTime(n.updatedAt)}</div>
           </div>`
         )
         .join('')}</div>` : `<div class="card empty">${state.notes.length ? 'No notes match.' : 'No general notes yet — jot down strategy, bankroll rules, trends to watch…'}</div>`}
@@ -2471,6 +2472,7 @@
 
     document.getElementById('newNote').addEventListener('click', () => openNoteForm());
     app.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => openNoteForm(state.notes.find((n) => n.id === b.dataset.edit))));
+    app.querySelectorAll('[data-float]').forEach((b) => b.addEventListener('click', () => openFloatNote(state.notes.find((n) => n.id === b.dataset.float))));
     app.querySelectorAll('[data-del]').forEach((b) =>
       b.addEventListener('click', async () => {
         if (!confirm('Delete this note?')) return;
@@ -3664,6 +3666,251 @@ Wager: $55.00   To Win: $50.00">${esc(text)}</textarea></details>
       });
     }
   }
+
+  // ---------- floating notes ----------
+  // A 📝 Notes button on Matchups, Rankings, Market and game pages opens a movable note window.
+  // It saves as you type and when closed, straight into the Notes tab, and any note can be
+  // reopened from the same button to keep a thought going.
+
+  const NOTE_VIEWS = ['matchups', 'rankings', 'market', 'game'];
+  const FLOAT_POS_KEY = 'bf.floatNote.box';
+  const fl = { note: null, dirty: false, saving: null, timer: null };
+  const lsGet = (k) => {
+    try {
+      return JSON.parse(localStorage.getItem(k) || 'null');
+    } catch {
+      return null;
+    }
+  };
+  const lsSet = (k, v) => {
+    try {
+      localStorage.setItem(k, JSON.stringify(v));
+    } catch {}
+  };
+
+  // what page the note is being written on
+  function noteContext() {
+    const { parts } = parseHash();
+    const view = parts[0];
+    if (view === 'game') {
+      const d = (state.gamePages[`${parts[1]}:${parts[2]}`] || {}).data;
+      const label = d ? `${d.game.away.abbr} @ ${d.game.home.abbr}` : 'Game';
+      return { view, ref: `game:${parts[1]}:${parts[2]}`, label, href: `#/game/${parts[1]}/${parts[2]}`, tags: ['matchups', label] };
+    }
+    const label = { matchups: 'Matchups', rankings: 'Rankings', market: 'Market' }[view] || 'Notes';
+    return { view, ref: view, label, href: `#/${view}`, tags: [view] };
+  }
+
+  const fab = document.createElement('button');
+  fab.type = 'button';
+  fab.className = 'notes-fab';
+  fab.hidden = true;
+  fab.setAttribute('aria-haspopup', 'true');
+  fab.innerHTML = '<span aria-hidden="true">📝</span> Notes';
+  document.body.appendChild(fab);
+
+  const menu = document.createElement('div');
+  menu.className = 'notes-menu';
+  menu.hidden = true;
+  document.body.appendChild(menu);
+
+  const win = document.createElement('section');
+  win.className = 'float-note';
+  win.hidden = true;
+  win.setAttribute('aria-label', 'Note');
+  win.innerHTML = `<header class="fn-head"><span class="fn-grip" aria-hidden="true">⠿</span>
+      <input class="fn-title" type="text" placeholder="Title" aria-label="Note title">
+      <a class="fn-open" href="#/notes" title="Open the Notes tab">Notes ↗</a>
+      <button type="button" class="fn-close" aria-label="Save and close">✕</button></header>
+    <textarea class="fn-body" placeholder="Write a thought… it saves as you type." aria-label="Note"></textarea>
+    <footer class="fn-foot"><span class="fn-ctx"></span><span class="fn-status" role="status"></span></footer>`;
+  document.body.appendChild(win);
+  const fnTitle = win.querySelector('.fn-title');
+  const fnBody = win.querySelector('.fn-body');
+  const fnStatus = win.querySelector('.fn-status');
+
+  function syncFab() {
+    const view = parseHash().parts[0];
+    fab.hidden = !NOTE_VIEWS.includes(view);
+    if (fab.hidden) menu.hidden = true;
+  }
+
+  function placeWindow() {
+    if (window.innerWidth <= 640) {
+      win.style.left = win.style.top = win.style.width = win.style.height = '';
+      return;
+    }
+    const box = lsGet(FLOAT_POS_KEY) || {};
+    const w = Math.min(box.w || 380, window.innerWidth - 24);
+    const h = Math.min(box.h || 340, window.innerHeight - 90);
+    const left = box.x != null ? box.x : window.innerWidth - w - 24;
+    const top = box.y != null ? box.y : window.innerHeight - h - 84;
+    win.style.width = w + 'px';
+    win.style.height = h + 'px';
+    win.style.left = Math.max(8, Math.min(left, window.innerWidth - w - 8)) + 'px';
+    win.style.top = Math.max(68, Math.min(top, window.innerHeight - 60)) + 'px';
+  }
+
+  function setStatus(text) {
+    if (fnStatus.textContent !== text) fnStatus.textContent = text;
+  }
+
+  // Save the open note (serialized, so typing fast never creates two notes).
+  function saveFloat({ keepalive } = {}) {
+    clearTimeout(fl.timer);
+    const n = fl.note;
+    if (!n) return Promise.resolve();
+    const title = fnTitle.value.trim();
+    const body = fnBody.value;
+    if (!n.id && !title && !body.trim()) return Promise.resolve(); // nothing written yet
+    if (!fl.dirty && n.id) return Promise.resolve();
+    fl.dirty = false;
+    const ctx = n.context || {};
+    const tags = [...new Set([...(n.tags || []), ...(fl.ctx ? fl.ctx.tags : [])])];
+    const payload = { ...n, title: title || `${ctx.label || 'Note'} · ${new Date(n.createdAt || Date.now()).toLocaleDateString()}`, body, tags };
+    if (keepalive) {
+      fetch(n.id ? '/api/notes/' + encodeURIComponent(n.id) : '/api/notes', { method: n.id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), keepalive: true }).catch(() => {});
+      return Promise.resolve();
+    }
+    setStatus('Saving…');
+    const run = async () => {
+      try {
+        if (n.id) {
+          const saved = await api('PUT', '/api/notes/' + encodeURIComponent(n.id), { ...payload, id: n.id });
+          state.notes = state.notes.map((x) => (x.id === saved.id ? saved : x));
+          if (fl.note === n) Object.assign(n, saved);
+        } else {
+          const saved = await api('POST', '/api/notes', payload);
+          state.notes.push(saved);
+          Object.assign(n, saved);
+        }
+        if (fl.note === n) setStatus(`Saved ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
+        if (parseHash().parts[0] === 'notes') quietRender();
+      } catch (err) {
+        fl.dirty = true;
+        if (fl.note === n) setStatus(`Not saved: ${err.message}`);
+      }
+    };
+    fl.saving = (fl.saving || Promise.resolve()).then(run);
+    return fl.saving;
+  }
+
+  async function openFloatNote(note) {
+    if (fl.note) await saveFloat();
+    fl.ctx = noteContext();
+    fl.note = note ? { ...note } : { tags: fl.ctx.tags.slice(), context: { view: fl.ctx.view, ref: fl.ctx.ref, label: fl.ctx.label, href: fl.ctx.href }, createdAt: new Date().toISOString() };
+    fl.dirty = false;
+    fnTitle.value = fl.note.title || '';
+    fnBody.value = fl.note.body || '';
+    const c = fl.note.context;
+    win.querySelector('.fn-ctx').innerHTML = c && c.href ? `From <a href="${esc(c.href)}">${esc(c.label)}</a>` : '';
+    setStatus(fl.note.id ? `Last saved ${fmtDateTime(fl.note.updatedAt)}` : 'New note');
+    menu.hidden = true;
+    win.hidden = false;
+    placeWindow();
+    (fl.note.id ? fnBody : fnTitle).focus();
+    if (fl.note.id) fnBody.setSelectionRange(fnBody.value.length, fnBody.value.length);
+  }
+
+  async function closeFloatNote() {
+    fl.dirty = fl.dirty || !fl.note.id;
+    await saveFloat();
+    const had = fl.note && fl.note.id;
+    fl.note = null;
+    win.hidden = true;
+    if (had) toast('Saved to Notes');
+    fab.focus();
+  }
+
+  const onEdit = () => {
+    fl.dirty = true;
+    setStatus('Editing…');
+    clearTimeout(fl.timer);
+    fl.timer = setTimeout(() => saveFloat(), 700);
+  };
+  fnTitle.addEventListener('input', onEdit);
+  fnBody.addEventListener('input', onEdit);
+  win.querySelector('.fn-close').addEventListener('click', closeFloatNote);
+  win.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeFloatNote();
+  });
+  window.addEventListener('pagehide', () => fl.note && fl.dirty && saveFloat({ keepalive: true }));
+  window.addEventListener('resize', () => !win.hidden && placeWindow());
+
+  // drag by the header; remember where it was left and how big
+  win.querySelector('.fn-head').addEventListener('pointerdown', (e) => {
+    if (window.innerWidth <= 640 || e.target.closest('input, button, a')) return;
+    e.preventDefault();
+    const start = { x: e.clientX, y: e.clientY, left: win.offsetLeft, top: win.offsetTop };
+    const head = e.currentTarget;
+    head.setPointerCapture(e.pointerId);
+    win.classList.add('dragging');
+    const move = (ev) => {
+      const left = Math.max(8, Math.min(start.left + ev.clientX - start.x, window.innerWidth - win.offsetWidth - 8));
+      const top = Math.max(68, Math.min(start.top + ev.clientY - start.y, window.innerHeight - 60));
+      win.style.left = left + 'px';
+      win.style.top = top + 'px';
+    };
+    const up = () => {
+      head.removeEventListener('pointermove', move);
+      head.removeEventListener('pointerup', up);
+      win.classList.remove('dragging');
+      lsSet(FLOAT_POS_KEY, { ...(lsGet(FLOAT_POS_KEY) || {}), x: win.offsetLeft, y: win.offsetTop });
+    };
+    head.addEventListener('pointermove', move);
+    head.addEventListener('pointerup', up);
+  });
+  new ResizeObserver(() => {
+    if (win.hidden || window.innerWidth <= 640 || win.classList.contains('dragging')) return;
+    const box = lsGet(FLOAT_POS_KEY) || {};
+    if (box.w !== win.offsetWidth || box.h !== win.offsetHeight) lsSet(FLOAT_POS_KEY, { ...box, w: win.offsetWidth, h: win.offsetHeight });
+  }).observe(win);
+
+  // the menu: new note, or pick one to continue (this page's notes first)
+  function renderNotesMenu(q = '') {
+    const ctx = noteContext();
+    const query = q.trim().toLowerCase();
+    const related = (n) => (n.context && n.context.ref === ctx.ref ? 2 : (n.tags || []).includes(ctx.view === 'game' ? ctx.label : ctx.view) ? 1 : 0);
+    const list = state.notes
+      .filter((n) => !query || `${n.title} ${n.body} ${(n.tags || []).join(' ')}`.toLowerCase().includes(query))
+      .sort((a, b) => related(b) - related(a) || String(b.updatedAt).localeCompare(String(a.updatedAt)))
+      .slice(0, 30);
+    const here = list.filter((n) => related(n));
+    const rest = list.filter((n) => !related(n));
+    const row = (n) => `<button type="button" class="nm-item" data-note="${esc(n.id)}"><span class="nm-title">${esc(n.title || 'Untitled')}</span>
+        <span class="nm-snip">${esc(String(n.body || '').slice(0, 90))}</span><span class="nm-meta">${esc(fmtDateTime(n.updatedAt))}</span></button>`;
+    menu.innerHTML = `<button type="button" class="btn primary nm-new">+ New note${ctx.label && ctx.view !== 'notes' ? ` for ${esc(ctx.label)}` : ''}</button>
+      <input type="search" class="nm-search" placeholder="Find a note to continue…" value="${esc(q)}" aria-label="Find a note">
+      <div class="nm-list">${here.length ? `<div class="nm-group">On this page</div>${here.map(row).join('')}` : ''}${rest.length ? `<div class="nm-group">${here.length ? 'Other notes' : 'Recent notes'}</div>${rest.map(row).join('')}` : ''}${list.length ? '' : `<div class="muted small nm-empty">${query ? 'No notes match.' : 'No notes yet.'}</div>`}</div>`;
+    menu.querySelector('.nm-new').addEventListener('click', () => openFloatNote(null));
+    const search = menu.querySelector('.nm-search');
+    search.addEventListener('input', () => {
+      const pos = search.selectionStart;
+      renderNotesMenu(search.value);
+      const s2 = menu.querySelector('.nm-search');
+      s2.focus();
+      s2.setSelectionRange(pos, pos);
+    });
+    menu.querySelectorAll('[data-note]').forEach((b) => b.addEventListener('click', () => openFloatNote(state.notes.find((n) => n.id === b.dataset.note))));
+  }
+  fab.addEventListener('click', () => {
+    if (!menu.hidden) {
+      menu.hidden = true;
+      return;
+    }
+    renderNotesMenu();
+    menu.hidden = false;
+    menu.querySelector('.nm-new').focus();
+  });
+  document.addEventListener('pointerdown', (e) => {
+    if (!menu.hidden && !menu.contains(e.target) && !fab.contains(e.target)) menu.hidden = true;
+  });
+  menu.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      menu.hidden = true;
+      fab.focus();
+    }
+  });
 
   // ---------- collapsible sections ----------
   // Every titled card on every tab can be folded to its heading. What you fold is remembered

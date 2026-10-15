@@ -699,3 +699,29 @@ dialog.wide { width: min(980px, calc(100vw - 24px)); }
 .mu-skew { font-size: .86rem; background: var(--warn-bg); border-radius: var(--radius-sm); padding: 8px 10px; margin: 8px 0; }
 .mu-skew ul { margin: 4px 0 0; padding-left: 18px; }
 @media (max-width: 640px) { .mu-lean { display: none; } }
+
+/* ---------- collapsible sections ---------- */
+.card.collapsible > h2 { display: flex; align-items: center; gap: 8px; }
+.collapse-title { cursor: pointer; user-select: none; }
+.collapse-btn {
+  display: inline-flex; align-items: center; justify-content: center; flex: none; width: 30px; height: 30px; margin-left: auto;
+  border: 0; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; transition: background .12s, color .12s;
+}
+.card-head > .collapse-btn { margin-left: 0; }
+.card-head:has(> .collapse-btn) { align-items: center; }
+.collapse-btn:hover { background: var(--surface-2); color: var(--text); }
+.collapse-btn svg { transition: transform .18s ease; }
+.card.collapsed .collapse-btn svg { transform: rotate(-90deg); }
+.card.collapsed > :not(:first-child) { display: none !important; }
+.card.collapsed > h2, .card.collapsed > .card-head { margin-bottom: 0; }
+.card.collapsed { padding-top: 14px; padding-bottom: 14px; }
+.page-head .collapse-all { align-self: flex-end; }
+.card-head:has(> .collapse-btn) { justify-content: flex-start; }
+.card-head:has(> .collapse-btn) > h2 { margin-right: auto; }
+.grid > .card.collapsed { align-self: start; }
+@media (max-width: 640px) {
+  .card-head:has(> .collapse-btn) { flex-wrap: nowrap; }
+  .card-head:has(> .collapse-btn) > h2 { min-width: 0; }
+  .card-head:has(> .collapse-btn) > span.muted { display: none; }
+  .card-head:has(> .collapse-btn) > select { max-width: 40%; }
+}

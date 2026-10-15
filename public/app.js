@@ -3384,6 +3384,115 @@ Wager: $55.00   To Win: $50.00">${esc(text)}</textarea></details>
     }
   }
 
+  // ---------- collapsible sections ----------
+  // Every titled card on every tab can be folded to its heading. What you fold is remembered
+  // per page. Cards are found after each render (and when parts of a page load later).
+
+  const COLLAPSE_KEY = 'bf.collapsed';
+  let collapsedSet;
+  try {
+    collapsedSet = new Set(JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '[]'));
+  } catch {
+    collapsedSet = new Set();
+  }
+  const saveCollapsed = () => {
+    try {
+      localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...collapsedSet].slice(-400)));
+    } catch {}
+  };
+  const CHEVRON = '<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M5 7.5l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  function cardHead(card) {
+    const first = card.firstElementChild;
+    if (!first) return null;
+    if (first.tagName === 'H2') return { head: first, title: first };
+    if (first.classList.contains('card-head')) {
+      const h = first.querySelector('h2');
+      if (h) return { head: first, title: h };
+    }
+    return null;
+  }
+
+  function setCollapsed(card, on, key) {
+    card.classList.toggle('collapsed', on);
+    const btn = card.querySelector(':scope > .card-head > .collapse-btn, :scope > h2 > .collapse-btn');
+    if (btn) {
+      btn.setAttribute('aria-expanded', String(!on));
+      btn.setAttribute('aria-label', `${on ? 'Expand' : 'Collapse'} ${card.dataset.collapseTitle}`);
+    }
+    if (key) {
+      on ? collapsedSet.add(key) : collapsedSet.delete(key);
+      saveCollapsed();
+    }
+  }
+
+  function enhanceCollapsibles() {
+    const view = parseHash().parts[0] || 'dashboard';
+    const cards = [...app.querySelectorAll('.card')].filter((c) => !c.classList.contains('empty') && !c.parentElement.closest('.card'));
+    let count = 0;
+    for (const card of cards) {
+      const h = cardHead(card);
+      if (!h) continue;
+      count++;
+      const title = h.title.textContent.replace(/\s+/g, ' ').trim();
+      const key = `${view}:${title}`;
+      card.dataset.collapseTitle = title;
+      card.dataset.collapseKey = key;
+      if (!h.head.querySelector(':scope > .collapse-btn')) {
+        card.classList.add('collapsible');
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'collapse-btn';
+        btn.innerHTML = CHEVRON;
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          setCollapsed(card, !card.classList.contains('collapsed'), card.dataset.collapseKey);
+          syncCollapseAll();
+        });
+        h.head.appendChild(btn);
+        h.title.classList.add('collapse-title');
+        h.title.addEventListener('click', (e) => {
+          if (e.target.closest('a, button, input, select, label')) return;
+          btn.click();
+        });
+      }
+      setCollapsed(card, collapsedSet.has(key));
+    }
+    // "Collapse all" on pages with several sections
+    const head = app.querySelector(':scope > .page-head');
+    let all = app.querySelector('.collapse-all');
+    if (head && count >= 3 && !all) {
+      all = document.createElement('button');
+      all.type = 'button';
+      all.className = 'btn sm collapse-all';
+      all.addEventListener('click', () => {
+        const list = [...app.querySelectorAll('.card.collapsible')];
+        const fold = list.some((c) => !c.classList.contains('collapsed'));
+        list.forEach((c) => setCollapsed(c, fold, c.dataset.collapseKey));
+        syncCollapseAll();
+      });
+      head.appendChild(all);
+    } else if (all && count < 3) all.remove();
+    syncCollapseAll();
+  }
+
+  function syncCollapseAll() {
+    const all = app.querySelector('.collapse-all');
+    if (!all) return;
+    const fold = [...app.querySelectorAll('.card.collapsible')].some((c) => !c.classList.contains('collapsed'));
+    all.textContent = fold ? 'Collapse all' : 'Expand all';
+  }
+
+  let collapseQueued = false;
+  new MutationObserver(() => {
+    if (collapseQueued) return;
+    collapseQueued = true;
+    requestAnimationFrame(() => {
+      collapseQueued = false;
+      enhanceCollapsibles();
+    });
+  }).observe(app, { childList: true, subtree: true });
+
   // ---------- updates ----------
 
   const overlay = document.getElementById('overlay');

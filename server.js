@@ -22,6 +22,7 @@ const market = require('./lib/market');
 const slipReader = require('./lib/slipreader');
 const deps = require('./lib/deps');
 const rankings = require('./lib/rankings');
+const advisor = require('./lib/advisor');
 const { createMacService } = require('./lib/macservice');
 const { createAuth, isLocalRequest, loginPage, blockedPage } = require('./lib/auth');
 
@@ -823,6 +824,113 @@ function rankingsStatus(league, force) {
   return { status: job.status, progress: job.progress, error: job.error, data: job.data || null };
 }
 
+// ---------- game page: everything about one game, plus advantageous bets ----------
+
+const INJURY_BAD = /^(out|doubtful|questionable|injured reserve|ir|pup|suspended|day-to-day)/i;
+
+// Which team a player is on, from cached box scores of games involving either team.
+function playerTeamFromBoxes(league, name, teams) {
+  const key = grading.normName(name);
+  let hit = null;
+  for (const box of Object.values(boxCache(league).map)) {
+    const p = box.players && box.players[key];
+    if (p && teams.includes(p.team)) hit = { team: p.team, qb: (p.stats['passing.ATT'] || 0) >= 5 || !!(hit && hit.qb) };
+  }
+  return hit;
+}
+
+async function getGamePage(league, id) {
+  const sched = await getSchedule(league, 14);
+  const g = sched.games.find((x) => x.id === id);
+  if (!g) throw Object.assign(new Error("That game isn't on the schedule for the next two weeks."), { status: 404 });
+  const H = g.home.abbr;
+  const A = g.away.abbr;
+  const sport = league.toUpperCase();
+  const status = { rankings: 'n/a', trends: 'none', props: 0, odds: false };
+
+  // line: ESPN's current line, consensus odds when an Odds API key is set
+  const cur = (g.lines && g.lines.current) || {};
+  let homeSpread = cur.homeSpread != null ? cur.homeSpread : null;
+  if (homeSpread == null && g.spread) {
+    const m = /^([A-Z]{2,4})\s+([+-]?\d+(?:\.\d+)?)/.exec(g.spread);
+    if (m) homeSpread = m[1] === H ? Number(m[2]) : -Number(m[2]);
+    else if (/even|pk/i.test(g.spread)) homeSpread = 0;
+  }
+  const total = cur.total != null ? cur.total : g.overUnder != null ? Number(g.overUnder) : null;
+  let consensus = null;
+  const oc = gameOddsCache[league];
+  if (oc && oc.events) {
+    const ev = market.matchOddsEvent(oc.events, g);
+    consensus = ev ? market.gameConsensus(ev) : null;
+    status.odds = !!consensus;
+  }
+
+  // rankings-based matchup (NFL)
+  let rk = null;
+  let matchup = null;
+  if (league === 'nfl') {
+    const st = rankingsStatus(league);
+    status.rankings = st.data ? 'ready' : st.status;
+    rk = st.data;
+    if (rk) matchup = rankings.gameMatchup(rk, { team: A, opp: H });
+  }
+
+  // betting trends (ATS / over-under / situational) for both teams
+  const fav = homeSpread == null ? null : homeSpread < 0 ? H : homeSpread > 0 ? A : null;
+  const trendItems = [];
+  await Promise.all(
+    [[A, H, false], [H, A, true]].map(async ([team, opp, home]) => {
+      try {
+        const n = await getTeamNiche(league, team);
+        for (const item of trends.teamTrends(n, { opp, home, slots: league === 'nfl' ? etSlots(g.date) : {}, favorite: fav })) trendItems.push(item);
+        status.trends = 'ready';
+      } catch (err) {
+        console.warn(`Game page: trends for ${team} failed: ${err.message}`);
+      }
+    })
+  );
+
+  // injuries (anything that isn't simply "Active")
+  const injuries = {};
+  try {
+    const inj = await getInjuries(league);
+    for (const abbr of [A, H]) {
+      const t = inj.teams.find((x) => x.abbr === abbr);
+      injuries[abbr] = t ? t.players.filter((p) => INJURY_BAD.test(p.status || '')) : [];
+    }
+  } catch {}
+
+  let wx = null;
+  if (league === 'nfl') {
+    try {
+      wx = await getWeather(H, g.date, { neutral: g.neutralSite, indoor: g.indoor });
+    } catch {}
+  }
+
+  // prop lines (when they were loaded for this game on the Market tab), with each player's team
+  const pc = propsCache[league] && propsCache[league][id];
+  const props = (pc ? pc.props : []).map((p) => {
+    const who = playerTeamFromBoxes(league, p.player, [A, H]);
+    return who ? { ...p, team: who.team, opp: who.team === H ? A : H, qb: who.qb } : p;
+  });
+  status.props = props.length;
+
+  // player streaks from the Streaks scan, if it has run
+  const tj = Object.entries(trendJobs).find(([k, j]) => k.startsWith(league + ':') && j.data);
+  const streaks = tj ? tj[1].data.players.filter((x) => x.team === A || x.team === H) : [];
+
+  const propNotes = (p) => (rk ? rankings.matchupNotes(rk, { opp: p.opp, prop: p.category, side: p.side, qb: p.qb }) : null);
+  const advice = advisor.advise({
+    game: {
+      sport, home: H, away: A, homeSpread, total, indoor: g.indoor,
+      homeML: consensus && consensus.consensus.homeML, awayML: consensus && consensus.consensus.awayML, best: consensus && consensus.best,
+    },
+    matchup, trends: trendItems, injuries, weather: wx, bets: db.bets, props, propNotes, streaks,
+  });
+
+  return { league, game: g, homeSpread, total, consensus, matchup, trends: trendItems, injuries, weather: wx, advice, streaks, status, oddsConfigured: !!oddsApiKey() };
+}
+
 // Prop lines fetched on the Market tab (none until the props feature is used).
 function cachedPropsFor(league) {
   return typeof marketProps === 'function' ? marketProps(league) : [];
@@ -1029,6 +1137,16 @@ async function handleApi(req, res, url) {
     const st = rankingsStatus('nfl');
     if (!st.data) return send(res, 200, { status: st.status, progress: st.progress, error: st.error });
     return send(res, 200, { status: 'ready', season: st.data.season, matchup: rankings.matchupNotes(st.data, { opp, prop: q.get('prop') || '', side: q.get('side') || 'Over', qb: q.get('qb') === '1' }) });
+  }
+
+  if (resource === 'game') {
+    const league = (id || '').toLowerCase();
+    if (!LEAGUE_PATHS[league]) return send(res, 404, { error: 'Unknown league' });
+    try {
+      return send(res, 200, await getGamePage(league, parts[2] || ''));
+    } catch (err) {
+      return send(res, err.status || 502, { error: err.message });
+    }
   }
 
   if (resource === 'gamematchup') {

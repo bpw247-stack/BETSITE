@@ -18,6 +18,7 @@
     h2hOpen: new Set(), // keys of expanded "previous matchups" panels
     gmOpen: new Set(), // keys of expanded "team matchup" panels on game cards
     gameMatchups: {}, // `${team}:${opp}` -> last /api/gamematchup response
+    gamePages: {}, // `${league}:${id}` -> { loading, data, error }
     niche: {}, // `${league}:${a}:${b}` -> { loading, data, error }
     weather: {}, // `${home}|${kickoff}|${neutral}|${indoor}` -> forecast
     market: {}, // `${league}:${days}` -> { loading, data, error }
@@ -218,11 +219,12 @@
     injuries: renderInjuries,
     matchups: renderMatchups,
     market: renderMarket,
+    game: renderGame,
     rankings: renderRankings,
     notes: renderNotes,
     settings: renderSettings,
   };
-  const navFor = { bet: 'bets', team: 'teams' };
+  const navFor = { bet: 'bets', team: 'teams', game: 'matchups' };
 
   function render() {
     const { parts, params } = parseHash();
@@ -1270,7 +1272,8 @@
           ${my.length ? `<div class="game-mybets">📌 You have ${plural(my.length, 'pending pick')} on this game: ${my.map((x) => `<a href="#/bet/${encodeURIComponent((x.parlay || x).id)}">${esc(betTitle(x))}${x.parlay ? ' (parlay leg)' : ''}</a>`).join(', ')}</div>` : ''}
           ${statmuseLinks(sport, [`${teamName(sport, g.a)} vs ${teamName(sport, g.h)} last 10 games`, `${teamName(sport, g.a)} record on the road this season`, `${teamName(sport, g.h)} record at home this season`])}
           <div class="btn-row game-actions">
-            <button class="btn sm primary" data-niche="${esc(g.id)}">📊 Niche Stats</button>
+            <a class="btn sm primary" href="#/game/${league}/${encodeURIComponent(g.id)}">Open matchup</a>
+            <button class="btn sm" data-niche="${esc(g.id)}">📊 Niche Stats</button>
             <button class="btn sm" data-bet-game="${esc(g.id)}" data-team="${esc(g.a)}" data-opp="${esc(g.h)}" data-date="${esc(g.date)}">+ Bet ${esc(g.a)}</button>
             <button class="btn sm" data-bet-game="${esc(g.id)}" data-team="${esc(g.h)}" data-opp="${esc(g.a)}" data-date="${esc(g.date)}">+ Bet ${esc(g.h)}</button>
           </div>
@@ -2059,6 +2062,158 @@
     const q = f.q.value.trim();
     if (q) window.open(statmuseUrl(f.dataset.sport, q), '_blank', 'noopener');
   });
+
+  // ---------- game page ----------
+  // Everything about one game on one screen: the line, advantageous bets, the team matchup,
+  // injuries, trends, previous meetings and your own history with these teams.
+
+  let gamePoll = null;
+  async function loadGamePage(league, id, refresh) {
+    const key = `${league}:${id}`;
+    clearTimeout(gamePoll);
+    const cur = state.gamePages[key];
+    if (cur && cur.loading) return;
+    state.gamePages[key] = { ...(cur || {}), loading: true };
+    try {
+      state.gamePages[key] = { data: await api('GET', `/api/game/${league}/${encodeURIComponent(id)}${refresh ? '?refresh=1' : ''}`) };
+    } catch (err) {
+      state.gamePages[key] = { error: err.message, data: cur && cur.data };
+    }
+    const { parts } = parseHash();
+    const here = parts[0] === 'game' && parts[2] === id;
+    if (here) quietRender();
+    const d = state.gamePages[key].data;
+    if (here && d && d.status && d.status.rankings === 'building') gamePoll = setTimeout(() => loadGamePage(league, id), 4000);
+  }
+
+  const SOURCE_ICON = { Rankings: '📊', Trends: '📈', Injuries: '🩹', Weather: '🌬️', 'Your record': '👤', Odds: '💵', Matchup: '🛡️', Streak: '🔥' };
+
+  function adviceCardHtml(x, i) {
+    const reason = (r) => `<li class="${r.dir > 0 ? 'pro' : 'con'}"><span class="adv-mark" aria-hidden="true">${r.dir > 0 ? '✓' : '✗'}</span><span>${esc(r.text)}</span><span class="adv-src">${SOURCE_ICON[r.source] || ''} ${esc(r.source)}</span></li>`;
+    return `<div class="adv-card ${x.confidence.toLowerCase()}">
+      <div class="adv-top"><span class="adv-conf">${esc(x.confidence)}</span><span class="adv-type">${esc(x.angle ? 'Player angle' : x.betType)}</span></div>
+      <div class="adv-title">${esc(x.title)}</div>
+      <div class="adv-odds">${x.odds != null ? `${oddsStr(x.odds)}${x.book ? ` <span class="muted">best at ${esc(x.book)}</span>` : ''}` : x.angle ? '<span class="muted">No line loaded; check your book</span>' : '<span class="muted">Odds not loaded</span>'}</div>
+      <ul class="adv-reasons">${x.for.map(reason).join('')}${x.against.map(reason).join('')}</ul>
+      <button class="btn sm primary" data-adv="${i}">+ Add this bet</button></div>`;
+  }
+
+  function renderGame([league, id]) {
+    league = league === 'nba' ? 'nba' : 'nfl';
+    const sport = league.toUpperCase();
+    const key = `${league}:${id}`;
+    const entry = state.gamePages[key];
+    if (!entry) loadGamePage(league, id);
+    const d = entry && entry.data;
+    if (!d) {
+      app.innerHTML = `<a href="#/matchups?league=${league}" class="small">← Matchups</a>${
+        entry && entry.error ? `<div class="alert error section">${esc(entry.error)}</div>` : '<div class="card empty section"><h3>Pulling the matchup together…</h3><div class="muted small">Rankings, trends, injuries, weather and odds. The first time can take a minute.</div></div>'
+      }`;
+      return;
+    }
+    const g = d.game;
+    const A = codeFor(sport, g.away);
+    const H = codeFor(sport, g.home);
+    const live = g.state === 'in';
+    const final = g.state === 'post';
+    const teamBlock = (t, code, side) => `<a class="gp-team ${side}" href="#/team/${sport}/${encodeURIComponent(code)}">
+        ${t.logo ? `<img src="${esc(t.logo)}" alt="" width="64" height="64">` : '<span class="gp-logo-ph"></span>'}
+        <span class="gp-name">${esc(t.name || teamName(sport, code))}</span><span class="gp-rec">${esc(t.record || '')}</span></a>`;
+    const lineBits = [
+      d.homeSpread != null ? `<span class="gp-chip"><span>Spread</span><strong>${esc(H)} ${d.homeSpread > 0 ? '+' : ''}${d.homeSpread}</strong></span>` : '',
+      d.total != null ? `<span class="gp-chip"><span>Total</span><strong>${d.total}</strong></span>` : '',
+      d.consensus && d.consensus.consensus.awayML != null ? `<span class="gp-chip"><span>Moneyline</span><strong>${esc(A)} ${oddsStr(d.consensus.consensus.awayML)} · ${esc(H)} ${oddsStr(d.consensus.consensus.homeML)}</strong></span>` : '',
+    ].join('');
+    const hero = `<section class="gp-hero">
+      <div class="gp-meta">${live ? `<span class="badge out">LIVE</span> ${esc(g.status)}` : final ? 'Final' : fmtGameTime(g.date)}${g.tv ? ` · ${esc(g.tv)}` : ''}${g.venue ? ` · ${esc(g.venue)}` : ''}</div>
+      <div class="gp-teams">${teamBlock(g.away, A, 'away')}
+        <div class="gp-mid">${live || final ? `<span class="gp-score">${esc(g.away.score)}<span>–</span>${esc(g.home.score)}</span>` : '<span class="gp-at">@</span>'}</div>
+        ${teamBlock(g.home, H, 'home')}</div>
+      ${lineBits ? `<div class="gp-lines">${lineBits}</div>` : ''}
+      ${sport === 'NFL' && d.weather ? `<div class="gp-weather">${weatherHtml(d.weather)}</div>` : ''}
+    </section>`;
+
+    // advantageous bets
+    const st = d.status || {};
+    const notes = [];
+    if (st.rankings === 'building') notes.push('Defense and offense rankings are still being added up; suggestions will sharpen in a minute.');
+    if (!st.props && d.oddsConfigured) notes.push('<button class="btn sm" id="gpLoadProps">Load player props</button> to include prop lines (about 6 Odds API requests).');
+    if (!d.oddsConfigured) notes.push('Add an Odds API key in Settings to include best prices and player prop lines.');
+    if (!d.streaks.length) notes.push('Run the <a href="#/market?view=streaks">Streaks scan</a> to add player streaks.');
+    const advice = d.advice || [];
+    const adviceCard = `<div class="card gp-adv"><div class="card-head"><h2>Advantageous bets</h2><span class="muted small">${plural(advice.length, 'idea')}</span></div>
+      ${advice.length ? `<div class="adv-grid">${advice.map(adviceCardHtml).join('')}</div>` : '<div class="empty">Nothing stands out for this game. The numbers, trends and your history don’t line up behind any bet.</div>'}
+      ${notes.length ? `<ul class="gp-notes">${notes.map((n) => `<li>${n}</li>`).join('')}</ul>` : ''}
+      <p class="muted small">Each idea adds up signals from rankings, betting trends, injuries, weather, odds, prop matchups and your own record, and shows the ones against it too. It's a research shortcut, not a guarantee.</p></div>`;
+
+    // injuries
+    const injCol = (code) => {
+      const list = (d.injuries && d.injuries[code]) || [];
+      return `<div><h3>${esc(teamName(sport, code))}</h3>${list.length ? list.map(injuryChip).join('') : '<div class="muted small">No injuries reported</div>'}</div>`;
+    };
+    const injCard = `<div class="card"><h2>Injuries</h2><div class="gp-two">${injCol(A)}${injCol(H)}</div></div>`;
+
+    // trends
+    const tItems = (code) => d.trends.filter((t) => t.team === code);
+    const trendCol = (code) => `<div><h3>${esc(teamName(sport, code))}</h3>${tItems(code).length ? `<ul class="trends">${tItems(code).map((t) => `<li class="trend"><span class="trend-tag ${t.kind === 'ou' ? 'ou' : 'ats'}">${t.kind === 'ou' ? 'O/U' : t.kind === 'situational' ? 'SPOT' : 'ATS'}</span> ${esc(t.text)}</li>`).join('')}</ul>` : '<div class="muted small">Nothing notable</div>'}</div>`;
+    const trendCard = `<div class="card"><h2>Betting trends</h2><div class="gp-two">${trendCol(A)}${trendCol(H)}</div></div>`;
+
+    // your history
+    const myPicks = S.picks(state.bets).filter((p) => (p.sport || '') === sport);
+    const onGame = myPicks.filter((p) => (p.result || 'pending') === 'pending' && [p.team, p.opponent].includes(A) && [p.team, p.opponent].includes(H));
+    const recLine = (code) => {
+      const on = S.summarize(myPicks.filter((p) => p.team === code));
+      const vs = S.summarize(myPicks.filter((p) => p.opponent === code));
+      return `<tr><td>${esc(teamName(sport, code))}</td><td class="num">${record(on)}</td><td class="num hide-sm">${on.count ? plHtml(on.profit) : '—'}</td><td class="num">${record(vs)}</td><td class="num hide-sm">${vs.count ? plHtml(vs.profit) : '—'}</td></tr>`;
+    };
+    const histCard = `<div class="card"><h2>Your history</h2>
+      ${onGame.length ? `<div class="game-mybets" style="margin-bottom:12px">📌 Pending on this game: ${onGame.map((x) => `<a href="#/bet/${encodeURIComponent((x.parlay || x).id)}">${esc(betTitle(x))}${x.parlay ? ' (parlay leg)' : ''}</a>`).join(', ')}</div>` : ''}
+      <div class="table-wrap"><table><thead><tr><th></th><th class="num">Betting on</th><th class="num hide-sm">P/L</th><th class="num">Betting against</th><th class="num hide-sm">P/L</th></tr></thead><tbody>${recLine(A)}${recLine(H)}</tbody></table></div></div>`;
+
+    const matchupCard = d.matchup ? `<div class="card"><h2>Team matchup</h2>${gameMatchupHtml(d.matchup)}</div>` : sport === 'NFL' ? '<div class="card"><h2>Team matchup</h2><div class="muted small">Rankings are being added up…</div></div>' : '';
+    const h2hCard = `<div class="card"><h2>Previous meetings</h2><div id="gpH2h">${h2hHtml(league, A, H, d.total)}</div></div>`;
+
+    app.innerHTML = `<div class="gp">
+      <div class="page-head gp-head"><div><a href="#/matchups?league=${league}" class="small">← Matchups</a><h1 class="sr-only">${esc(teamName(sport, A))} at ${esc(teamName(sport, H))}</h1></div>
+        <div class="btn-row"><button class="btn" id="gpNiche">📊 Niche Stats</button><button class="btn" id="gpRefresh">↻ Refresh</button></div></div>
+      ${hero}
+      ${adviceCard}
+      <div class="gp-grid">${matchupCard}${injCard}${trendCard}${histCard}${h2hCard}</div>
+      ${statmuseBox(sport, `e.g. ${teamName(sport, A).split(' ').pop()} vs ${teamName(sport, H).split(' ').pop()} last 10 games`)}
+    </div>`;
+
+    wireCommon();
+    app.querySelectorAll('[data-adv]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const x = advice[Number(b.dataset.adv)];
+        openBetForm({ sport, date: gameDateOnly(g.date), book: x.book || '', result: 'pending', ...x.pick, odds: x.pick.odds ?? '' });
+      })
+    );
+    app.querySelector('#gpRefresh').addEventListener('click', () => {
+      state.gamePages[key] = null;
+      loadGamePage(league, id, true);
+      render();
+    });
+    app.querySelector('#gpNiche').addEventListener('click', () => openNicheStats({ league, sport, a: A, h: H, game: g }));
+    const lp = app.querySelector('#gpLoadProps');
+    if (lp)
+      lp.addEventListener('click', async () => {
+        lp.disabled = true;
+        lp.textContent = 'Loading props…';
+        try {
+          await api('GET', `/api/props/${league}/${encodeURIComponent(id)}`);
+          loadGamePage(league, id);
+        } catch (err) {
+          toast(err.message);
+          lp.disabled = false;
+          lp.textContent = 'Load player props';
+        }
+      });
+    loadH2H(league, A, H).then(() => {
+      const el = document.getElementById('gpH2h');
+      if (el) el.innerHTML = h2hHtml(league, A, H, d.total);
+    });
+  }
 
   // ---------- rankings ----------
 
@@ -3590,7 +3745,7 @@ Wager: $55.00   To Win: $50.00">${esc(text)}</textarea></details>
       setCollapsed(card, collapsedSet.has(key));
     }
     // "Collapse all" on pages with several sections
-    const head = app.querySelector(':scope > .page-head');
+    const head = app.querySelector('.page-head');
     let all = app.querySelector('.collapse-all');
     if (head && count >= 3 && !all) {
       all = document.createElement('button');
@@ -3602,7 +3757,7 @@ Wager: $55.00   To Win: $50.00">${esc(text)}</textarea></details>
         list.forEach((c) => setCollapsed(c, fold, c.dataset.collapseKey));
         syncCollapseAll();
       });
-      head.appendChild(all);
+      (head.querySelector(':scope > .btn-row') || head).appendChild(all);
     } else if (all && count < 3) all.remove();
     syncCollapseAll();
   }

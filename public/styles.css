@@ -725,3 +725,24 @@ dialog.wide { width: min(980px, calc(100vw - 24px)); }
   .card-head:has(> .collapse-btn) > span.muted { display: none; }
   .card-head:has(> .collapse-btn) > select { max-width: 40%; }
 }
+
+/* ---------- team matchup (spread / moneyline / total) ---------- */
+.gm { display: flex; flex-direction: column; gap: 10px; }
+.gm-verdict { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--surface-2); }
+.gm-verdict.good { background: var(--good-bg); }
+.gm-verdict.good .mu-verdict { color: var(--good); }
+.gm-verdict.bad { background: var(--bad-bg); }
+.gm-verdict.bad .mu-verdict { color: var(--bad); }
+.gm-teams { display: grid; gap: 6px; }
+.gm-team { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: .92rem; }
+.gm-edge-count { margin-left: auto; font-size: .8rem; font-weight: 600; color: var(--text-2); }
+.gm-units { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 14px; }
+.gm-unit h4 { margin: 0 0 4px; font-size: .92rem; }
+.gm-table th, .gm-table td { padding: 6px 8px; font-size: .86rem; }
+.rk-r-inline { font-size: .74rem; color: var(--muted); margin-left: 2px; }
+.gm-edge { display: inline-block; padding: 0 7px; border-radius: 999px; font-size: .74rem; font-weight: 700; }
+.gm-edge.mine { background: var(--good-bg); color: var(--good); }
+.gm-edge.theirs { background: var(--bad-bg); color: var(--bad); }
+.game-card .gm-units { grid-template-columns: minmax(0, 1fr); }
+.game-card .gm-team .rk-form { display: none; }
+.gm-edge:not(.mine):not(.theirs) { background: var(--neutral-bg); color: var(--text-2); }

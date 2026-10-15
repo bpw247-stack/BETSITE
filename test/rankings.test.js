@@ -141,3 +141,24 @@ test('matchup notes: weak run defense helps a rushing Over, hurts the Under; QBs
   assert.strictEqual(R.matchupNotes(data, { opp: 'XXX', prop: 'Rushing Yards' }), null);
   assert.strictEqual(R.matchupNotes(data, { opp: 'DAL', prop: 'Anytime TD', side: 'Yes' }).side, 'Yes');
 });
+
+test('game matchup pairs each offense with the other defense, counts edges and gives an on-paper score', () => {
+  const data = R.buildRankings(season());
+  const m = R.gameMatchup(data, { team: 'PHI', opp: 'DAL' });
+  assert.strictEqual(m.units[0].offense, 'PHI');
+  assert.strictEqual(m.units[0].defense, 'DAL');
+  assert.strictEqual(m.units[0].rows[0].label, 'Points');
+  assert.strictEqual(m.units[0].rows[0].off.key, 'off.points');
+  assert.strictEqual(m.units[0].rows[0].def.key, 'def.points');
+  for (const u of m.units) for (const r of u.rows) {
+    if (r.edge === 'off') assert.ok(r.def.rank - r.off.rank >= 8);
+    if (r.edge === 'def') assert.ok(r.off.rank - r.def.rank >= 8);
+  }
+  const phi = data.teams.find((t) => t.abbr === 'PHI');
+  const dal = data.teams.find((t) => t.abbr === 'DAL');
+  assert.strictEqual(m.onPaper.PHI, (phi.values['off.points'] + dal.values['def.points']) / 2);
+  assert.strictEqual(m.onPaper.total, m.onPaper.PHI + m.onPaper.DAL);
+  assert.deepStrictEqual([m.records.DAL.w, m.records.DAL.l], [1, 3]);
+  assert.ok(m.outliers.some((o) => o.team === 'DAL'));
+  assert.strictEqual(R.gameMatchup(data, { team: 'PHI', opp: 'XXX' }), null);
+});

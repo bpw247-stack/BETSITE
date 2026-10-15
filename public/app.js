@@ -16,6 +16,8 @@
     schedule: {}, // `${league}:${days}` -> { loading, data, error }
     h2h: {}, // `${league}:${a}:${b}` -> { loading, data, error }
     h2hOpen: new Set(), // keys of expanded "previous matchups" panels
+    gmOpen: new Set(), // keys of expanded "team matchup" panels on game cards
+    gameMatchups: {}, // `${team}:${opp}` -> last /api/gamematchup response
     niche: {}, // `${league}:${a}:${b}` -> { loading, data, error }
     weather: {}, // `${home}|${kickoff}|${neutral}|${indoor}` -> forecast
     market: {}, // `${league}:${days}` -> { loading, data, error }
@@ -706,6 +708,7 @@
       </div>
       ${legsCard}
       ${b.betType === 'Player Prop' && b.player && window.LEAGUES[b.sport] ? '<div class="card section"><h2>🔍 Prop research</h2><div id="betResearch"></div></div>' : ''}
+      ${b.sport === 'NFL' && ['Moneyline', 'Spread', 'Total', 'Game Prop'].includes(b.betType) && b.team && b.opponent ? '<div class="card section"><h2>📊 Team matchup</h2><div id="betGameMatchup"></div></div>' : ''}
       ${injurySports
         .map((sp) => `<div class="card section"><div class="card-head"><h2>${injurySports.length > 1 ? esc(sp) + ' injury' : 'Injury'} report</h2><a href="#/injuries?league=${sp.toLowerCase()}">Full ${esc(sp)} report</a></div><div data-injuries="${esc(sp)}"></div></div>`)
         .join('')}`;
@@ -730,6 +733,8 @@
     );
     const br = document.getElementById('betResearch');
     if (br) showResearch(br, { sport: b.sport, team: b.team, player: b.player, prop: b.propCategory, line: b.line, side: b.side, opp: b.opponent });
+    const gm = document.getElementById('betGameMatchup');
+    if (gm) showGameMatchup(gm, { betType: b.betType, team: b.team, opp: b.opponent, line: b.line, side: b.side });
     for (const sp of injurySports) {
       renderTeamInjuriesInto(app.querySelector(`[data-injuries="${CSS.escape(sp)}"]`), sp, injuryGroups[sp].teams, injuryGroups[sp].players);
     }
@@ -1258,6 +1263,10 @@
             <summary>📜 Previous matchups</summary>
             <div class="h2h-body">${state.h2hOpen.has(`${league}:${g.a}:${g.h}`) ? h2hHtml(league, g.a, g.h, g.overUnder) : ''}</div>
           </details>
+          ${sport === 'NFL' ? `<details class="h2h gm-details" data-gm="${esc(`${g.a}:${g.h}`)}" data-a="${esc(g.a)}" data-b="${esc(g.h)}"${state.gmOpen.has(`${g.a}:${g.h}`) ? ' open' : ''}>
+            <summary>📊 Team matchup</summary>
+            <div class="h2h-body">${state.gmOpen.has(`${g.a}:${g.h}`) && state.gameMatchups[`${g.a}:${g.h}`] && state.gameMatchups[`${g.a}:${g.h}`].matchup ? gameMatchupHtml(state.gameMatchups[`${g.a}:${g.h}`].matchup) : ''}</div>
+          </details>` : ''}
           ${my.length ? `<div class="game-mybets">📌 You have ${plural(my.length, 'pending pick')} on this game: ${my.map((x) => `<a href="#/bet/${encodeURIComponent((x.parlay || x).id)}">${esc(betTitle(x))}${x.parlay ? ' (parlay leg)' : ''}</a>`).join(', ')}</div>` : ''}
           ${statmuseLinks(sport, [`${teamName(sport, g.a)} vs ${teamName(sport, g.h)} last 10 games`, `${teamName(sport, g.a)} record on the road this season`, `${teamName(sport, g.h)} record at home this season`])}
           <div class="btn-row game-actions">
@@ -1313,6 +1322,15 @@
       await Promise.all([a, b]);
       render();
       toast('Matchups refreshed');
+    });
+    app.querySelectorAll('details.gm-details').forEach((det) => {
+      det.addEventListener('toggle', () => {
+        const key = det.dataset.gm;
+        if (!det.open) return state.gmOpen.delete(key);
+        state.gmOpen.add(key);
+        const body = det.querySelector('.h2h-body');
+        if (!body.innerHTML.trim()) showGameMatchup(body, { team: det.dataset.a, opp: det.dataset.b });
+      });
     });
     app.querySelectorAll('details[data-h2h]').forEach((det) =>
       det.addEventListener('toggle', () => {
@@ -2683,6 +2701,7 @@
           <datalist id="propList"></datalist></div>
         <div class="field" data-show="side"><label>Side</label><select name="side">${sel(window.SIDES, b.side || '')}</select></div>
         <div class="field" data-show="line"><label>Line</label><input name="line" type="number" step="0.5" value="${esc(b.line ?? '')}" placeholder="e.g. -3.5 or 24.5"></div>
+        <div class="field full" data-show="game"><button type="button" class="btn sm" id="gameMatchupBtn">📊 Compare the teams</button> <span class="muted small">offense vs defense rankings</span><div id="gameMatchupOut"></div></div>
         <div class="field full" data-show="player"><button type="button" class="btn sm" id="researchBtn">🔍 Research this prop</button> <span class="muted small">recent games vs your line</span><div id="researchOut"></div></div>
         <div class="field full" data-show="legs">
           <label>Parlay legs</label>
@@ -2806,7 +2825,7 @@
       f.team.addEventListener('change', () => (team = f.team.value));
       f.opponent.addEventListener('change', () => (opp = f.opponent.value));
       f.querySelector('[data-team-label]').textContent = type === 'Player Prop' ? "Player's team" : type === 'Total' || type === 'Game Prop' ? 'Team / game' : 'Team picked';
-      const show = { team: type !== 'Parlay', opponent: !['Parlay', 'Future'].includes(type), player: type === 'Player Prop', prop, side: prop || type === 'Total', line: ['Spread', 'Total', 'Player Prop', 'Game Prop'].includes(type), legs: type === 'Parlay', result: !(type === 'Parlay' && legs.length) };
+      const show = { game: sport === 'NFL' && ['Moneyline', 'Spread', 'Total', 'Game Prop'].includes(type), team: type !== 'Parlay', opponent: !['Parlay', 'Future'].includes(type), player: type === 'Player Prop', prop, side: prop || type === 'Total', line: ['Spread', 'Total', 'Player Prop', 'Game Prop'].includes(type), legs: type === 'Parlay', result: !(type === 'Parlay' && legs.length) };
       f.querySelectorAll('[data-show]').forEach((el) => (el.hidden = !show[el.dataset.show]));
       f.querySelector('[data-odds-label]').textContent = type === 'Parlay' ? 'Parlay odds (American)' : 'Odds (American)';
       if (type === 'Parlay') {
@@ -2863,6 +2882,9 @@
       team = opp = '';
       sync();
     });
+    f.querySelector('#gameMatchupBtn').addEventListener('click', () =>
+      showGameMatchup(f.querySelector('#gameMatchupOut'), { betType: f.betType.value, team: f.team.value, opp: f.opponent.value, line: f.line.value, side: f.side.value })
+    );
     f.querySelector('#researchBtn').addEventListener('click', () =>
       showResearch(f.querySelector('#researchOut'), { sport: f.sport.value, team: f.team.value, player: f.player.value.trim(), prop: f.propCategory.value.trim(), line: f.line.value, side: f.side.value, opp: f.opponent.value })
     );
@@ -3059,6 +3081,99 @@
       <div class="table-wrap"><table class="mu-table"><tbody>${rows}</tbody></table></div>
       ${skew ? `<div class="mu-skew"><strong>Careful:</strong><ul>${skew}</ul></div>` : ''}
       <div class="muted small">Rank 1 is the best ${unit} in the league at it. Green helps your ${mu.side.toLowerCase()}, red works against it. "Last 3" shows when the last three games differ from the season by 15% or more.</div></div>`;
+  }
+
+  // "Team matchup" for spread, moneyline and total bets: each offense against the other defense.
+  const GM_PCT = new Set(['off.third', 'def.third', 'off.sackRate']);
+  function gmValue(x) {
+    if (x.value == null) return '—';
+    if (GM_PCT.has(x.key)) return (x.value * 100).toFixed(1) + '%';
+    if (x.total != null) return String(x.total);
+    return x.value.toFixed(1) + (/ypc$/.test(x.key) ? '' : '/g');
+  }
+  const clockStr = (sec) => (sec == null ? '—' : `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, '0')}`);
+
+  async function loadGameMatchup(team, opp, onProgress) {
+    const key = `${team}:${opp}`;
+    for (let i = 0; i < 40; i++) {
+      const r = await api('GET', `/api/gamematchup/nfl?${new URLSearchParams({ team, opp })}`);
+      if (r.status === 'ready' || r.status === 'error') return (state.gameMatchups[key] = r);
+      if (onProgress && onProgress(r) === false) return r;
+      await new Promise((res) => setTimeout(res, 2500));
+    }
+    throw new Error('The defense rankings are taking too long. Try again in a minute.');
+  }
+
+  // bet: { betType, team, opp, line, side } — the verdict reads the stats from that bet's point of view
+  function gameMatchupHtml(m, bet = {}) {
+    const name = (a) => teamName('NFL', a);
+    const nick = (a) => name(a).split(' ').pop();
+    const T = m.team;
+    const O = m.opp;
+    let verdict = null;
+    const p = m.onPaper;
+    if (p) {
+      const type = bet.betType;
+      const line = bet.line === '' || bet.line == null ? null : Number(bet.line);
+      if (type === 'Total' && line != null) {
+        const over = !/^under$/i.test(bet.side || 'Over');
+        const diff = p.total - line;
+        const lean = Math.abs(diff) < 1.5 ? 0 : (diff > 0) === over ? 1 : -1;
+        verdict = { lean, text: `On paper about <strong>${p.total.toFixed(1)}</strong> points; your line is ${over ? 'Over' : 'Under'} ${line}.` };
+      } else if (type === 'Spread' && line != null) {
+        const cover = p.margin + line;
+        const lean = Math.abs(cover) < 1.5 ? 0 : cover > 0 ? 1 : -1;
+        verdict = { lean, text: `On paper ${esc(nick(T))} ${p.margin >= 0 ? 'by' : 'lose by'} <strong>${Math.abs(p.margin).toFixed(1)}</strong>; your line is ${esc(nick(T))} ${line > 0 ? '+' : ''}${line}.` };
+      } else if (type === 'Moneyline' || type === 'Spread') {
+        const lean = Math.abs(p.margin) < 1.5 ? 0 : p.margin > 0 ? 1 : -1;
+        verdict = { lean, text: `On paper ${esc(nick(T))} ${p.margin >= 0 ? 'win by' : 'lose by'} <strong>${Math.abs(p.margin).toFixed(1)}</strong>.` };
+      }
+    }
+    const head = verdict
+      ? `<div class="gm-verdict ${verdict.lean > 0 ? 'good' : verdict.lean < 0 ? 'bad' : ''}"><span class="mu-verdict">${verdict.lean > 0 ? 'Leans your way' : verdict.lean < 0 ? 'Leans against you' : 'Close call'}</span><span>${verdict.text}</span></div>`
+      : '';
+    const rec = (a) => {
+      const r = m.records[a];
+      if (!r) return '';
+      return `<div class="gm-team"><strong>${esc(name(a))}</strong> <span class="muted">${r.w}-${r.l}${r.t ? `-${r.t}` : ''} · ${r.diff > 0 ? '+' : ''}${r.diff} diff${r.streak ? ` · ${esc(r.streak)}` : ''}</span>
+        <span class="rk-form">${[...r.last5].map((x) => `<span class="rk-res ${x.toLowerCase()}">${x}</span>`).join('')}</span>
+        <span class="gm-edge-count">${m.edges[a]} edge${m.edges[a] === 1 ? '' : 's'}</span></div>`;
+    };
+    const unitTable = (u) => `<div class="gm-unit"><h4>${esc(nick(u.offense))} offense vs ${esc(nick(u.defense))} defense</h4>
+      <div class="table-wrap"><table class="gm-table"><thead><tr><th></th><th class="num">${esc(u.offense)} off</th><th class="num">${esc(u.defense)} def</th><th>Edge</th></tr></thead><tbody>${u.rows
+        .map((r) => {
+          const who = r.edge === 'off' ? u.offense : r.edge === 'def' ? u.defense : null;
+          return `<tr><td>${esc(r.label)}</td><td class="num">${gmValue(r.off)} <span class="rk-r-inline">${ordinal(r.off.rank)}</span></td><td class="num">${gmValue(r.def)} <span class="rk-r-inline">${ordinal(r.def.rank)}</span></td>
+            <td>${who ? `<span class="gm-edge ${!['Moneyline', 'Spread'].includes(bet.betType) ? '' : who === T ? 'mine' : 'theirs'}">${esc(who)}</span>` : '<span class="muted small">even</span>'}</td></tr>`;
+        })
+        .join('')}</tbody></table></div></div>`;
+    const pos = m.possession[T] != null && m.possession[O] != null ? `<div class="small muted">Time of possession: ${esc(nick(T))} ${clockStr(m.possession[T])}, ${esc(nick(O))} ${clockStr(m.possession[O])} per game.</div>` : '';
+    const paper = p ? `<div class="small">On paper (season averages): <strong>${esc(nick(T))} ${p[T].toFixed(1)}</strong>, <strong>${esc(nick(O))} ${p[O].toFixed(1)}</strong>, total ${p.total.toFixed(1)}.</div>` : '';
+    const skew = (m.outliers || []).length
+      ? `<div class="mu-skew"><strong>Careful:</strong><ul>${m.outliers.map((o) => `<li>${esc(outlierSentence(o, { teams: [] }).body.replace(/<[^>]+>/g, ''))}</li>`).join('')}</ul></div>`
+      : '';
+    return `<div class="gm">${head}<div class="gm-teams">${rec(T)}${rec(O)}</div>${paper}${pos}
+      <div class="gm-units">${m.units.map(unitTable).join('')}</div>${skew}
+      <div class="muted small">An edge means one unit ranks at least 8 places better than the unit it faces. "On paper" averages what each offense scores and what the other defense allows: a rough guide, not a prediction.</div></div>`;
+  }
+
+  async function showGameMatchup(el, bet) {
+    if (!bet.team || !bet.opp || bet.team === bet.opp) {
+      el.innerHTML = '<div class="muted small">Pick both teams to compare them.</div>';
+      return;
+    }
+    el.innerHTML = '<div class="muted small">Comparing the teams…</div>';
+    try {
+      const r = await loadGameMatchup(bet.team, bet.opp, (x) => {
+        if (!el.isConnected) return false;
+        const p = x.progress;
+        el.innerHTML = `<div class="muted small">Adding up this season's games${p && p.total ? ` (${p.done} of ${p.total})` : ''}…</div>`;
+      });
+      if (!el.isConnected) return;
+      el.innerHTML = r.matchup ? gameMatchupHtml(r.matchup, bet) : `<div class="muted small">Team rankings aren't available right now${r.error ? `: ${esc(r.error)}` : ''}.</div>`;
+    } catch (err) {
+      el.innerHTML = `<div class="alert small">${esc(err.message)}</div>`;
+    }
   }
 
   async function showResearch(el, q) {

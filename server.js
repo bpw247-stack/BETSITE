@@ -1008,6 +1008,16 @@ async function handleApi(req, res, url) {
     return send(res, 200, { status: 'ready', season: st.data.season, matchup: rankings.matchupNotes(st.data, { opp, prop: q.get('prop') || '', side: q.get('side') || 'Over', qb: q.get('qb') === '1' }) });
   }
 
+  if (resource === 'gamematchup') {
+    if ((id || '').toLowerCase() !== 'nfl') return send(res, 404, { error: 'Game matchups are available for the NFL' });
+    const team = String(url.searchParams.get('team') || '').toUpperCase();
+    const opp = String(url.searchParams.get('opp') || '').toUpperCase();
+    if (!rankings.TEAMS.includes(team) || !rankings.TEAMS.includes(opp) || team === opp) return send(res, 400, { error: 'Pick both teams to compare them' });
+    const st = rankingsStatus('nfl');
+    if (!st.data) return send(res, 200, { status: st.status, progress: st.progress, error: st.error });
+    return send(res, 200, { status: 'ready', season: st.data.season, matchup: rankings.gameMatchup(st.data, { team, opp }) });
+  }
+
   if (resource === 'rankings') {
     const league = (id || '').toLowerCase();
     if (league !== 'nfl') return send(res, 404, { error: 'Rankings are available for the NFL' });

@@ -1983,6 +1983,7 @@
             const d = await loadResearch(rq);
             p.team = team;
             slot.innerHTML = researchHtml(d, rq);
+            fillMatchups(slot);
             return;
           } catch (err) {
             if (i === p.teams.length - 1) slot.innerHTML = `<div class="alert small">${esc(err.message)}</div>`;
@@ -2049,14 +2050,14 @@
     return n + (v >= 11 && v <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][v % 10] || 'th');
   };
   const RK_SIDES = {
-    def: { title: 'Defense', overall: 'def.yards', cols: ['def.yards', 'def.points', 'def.pass', 'def.rush', 'def.ypc', 'def.sacks', 'def.ints', 'def.fumbles', 'def.takeaways', 'def.passTd', 'def.rushTd', 'def.third'] },
-    off: { title: 'Offense', overall: 'off.yards', cols: ['off.yards', 'off.points', 'off.pass', 'off.rush', 'off.passTd', 'off.rushTd', 'off.turnovers', 'off.ypc', 'off.sackRate', 'off.oline', 'off.third'] },
+    def: { title: 'Defense', overall: 'def.yards', cols: ['def.yards', 'def.points', 'def.pass', 'def.rush', 'def.ypc', 'def.sacks', 'def.ints', 'def.fumbles', 'def.takeaways', 'def.passTd', 'def.rushTd', 'def.third', 'def.qbRush', 'def.compPct', 'def.ypa', 'def.top'] },
+    off: { title: 'Offense', overall: 'off.yards', cols: ['off.yards', 'off.points', 'off.pass', 'off.rush', 'off.passTd', 'off.rushTd', 'off.turnovers', 'off.ypc', 'off.sackRate', 'off.oline', 'off.third', 'off.top'] },
   };
   const RK_CHIP = {
     'def.yards': 'Overall', 'def.points': 'Points allowed', 'def.pass': 'vs pass', 'def.rush': 'vs run', 'def.ypc': 'YPC allowed', 'def.sacks': 'Sacks',
-    'def.ints': 'Interceptions', 'def.fumbles': 'Fumbles recovered', 'def.takeaways': 'Takeaways', 'def.passTd': 'Pass TDs allowed', 'def.rushTd': 'Rush TDs allowed', 'def.third': '3rd down',
+    'def.ints': 'Interceptions', 'def.fumbles': 'Fumbles recovered', 'def.takeaways': 'Takeaways', 'def.passTd': 'Pass TDs allowed', 'def.rushTd': 'Rush TDs allowed', 'def.third': '3rd down', 'def.qbRush': 'QB rushing allowed', 'def.compPct': 'Completion % allowed', 'def.ypa': 'Yards per pass allowed', 'def.top': 'Opponent time of possession',
     'off.yards': 'Overall', 'off.points': 'Points', 'off.pass': 'Passing', 'off.rush': 'Rushing', 'off.passTd': 'Passing TDs', 'off.rushTd': 'Rushing TDs',
-    'off.turnovers': 'Turnovers', 'off.ypc': 'Yards per carry', 'off.sackRate': 'Sacks allowed', 'off.oline': 'O-line', 'off.third': '3rd down',
+    'off.turnovers': 'Turnovers', 'off.ypc': 'Yards per carry', 'off.sackRate': 'Sacks allowed', 'off.oline': 'O-line', 'off.third': '3rd down', 'off.top': 'Time of possession',
   };
 
   let rankingsPoll = null;
@@ -2078,6 +2079,7 @@
     if (m.key === 'off.oline') return v == null ? '—' : `${row.ranks['off.sackRate'] || '—'} · ${row.ranks['off.ypc'] || '—'}`;
     if (v == null) return '—';
     if (m.fmt === 'pct') return (v * 100).toFixed(1) + '%';
+    if (m.fmt === 'clock') return `${Math.floor(v / 60)}:${String(Math.round(v % 60)).padStart(2, '0')}`;
     if (m.fmt === 'count') return String(row.totals[m.key] ?? '—');
     return v.toFixed(1);
   }
@@ -2988,13 +2990,82 @@
         ${bars}</div>` : ''}
       ${d.vsOpp.length ? `<div class="small" style="margin-top:6px">vs this opponent: ${d.vsOpp.map((g) => `<strong>${g.value}</strong> <span class="muted">(${esc(fmtDate(g.date.slice(0, 10)))})</span>`).join(', ')}</div>` : ''}
       <div class="muted small" style="margin-top:4px">Last ${plural(played.length, 'game')} played, oldest to newest. Source: ESPN box scores.</div>
+      ${q.sport === 'NFL' ? `<div class="pr-matchup" data-matchup="${esc(JSON.stringify({ opp: q.opp || '', prop: d.prop, side: d.side, qb: d.qb ? 1 : 0, player: d.player }))}"></div>` : ''}
       ${statmuseLinks(q.sport, [`${d.player} ${d.prop} last 10 games`, q.opp ? `${d.player} ${d.prop} vs ${teamName(q.sport, q.opp)}` : '', `${d.player} ${d.prop} this season`])}</div>`;
+  }
+
+  // "Matchup" box under prop research: where the opponent ranks in the stats that drive this prop.
+  function fmtMatchupValue(f) {
+    if (f.fmt === 'pct') return (f.value * 100).toFixed(1) + '%';
+    if (f.fmt === 'clock') return `${Math.floor(f.value / 60)}:${String(Math.round(f.value % 60)).padStart(2, '0')}`;
+    if (f.fmt === 'count') return `${f.total} (${f.value.toFixed(1)}/g)`;
+    return f.value.toFixed(1) + (f.key.endsWith('ypc') || f.key.endsWith('ypa') ? '' : '/g');
+  }
+
+  async function fillMatchups(root) {
+    for (const box of root.querySelectorAll('.pr-matchup[data-matchup]')) {
+      const m = JSON.parse(box.dataset.matchup);
+      if (!m.opp) {
+        box.innerHTML = '<div class="muted small">Pick the opponent to see how their defense matches up.</div>';
+        continue;
+      }
+      box.innerHTML = `<div class="muted small">Checking ${esc(teamName('NFL', m.opp))}' defense…</div>`;
+      try {
+        let r;
+        for (let i = 0; i < 40; i++) {
+          r = await api('GET', `/api/matchup/nfl?${new URLSearchParams({ opp: m.opp, prop: m.prop, side: m.side, qb: m.qb })}`);
+          if (r.status === 'ready' || r.status === 'error' || !box.isConnected) break;
+          const p = r.progress;
+          box.innerHTML = `<div class="muted small">Adding up this season's games for the defense rankings${p && p.total ? ` (${p.done} of ${p.total})` : ''}…</div>`;
+          await new Promise((res) => setTimeout(res, 2500));
+        }
+        if (!box.isConnected) continue;
+        if (!r.matchup) {
+          box.innerHTML = `<div class="muted small">Defense rankings aren't available right now${r.error ? `: ${esc(r.error)}` : ''}.</div>`;
+          continue;
+        }
+        box.innerHTML = matchupHtml(r.matchup, m);
+      } catch (err) {
+        box.innerHTML = `<div class="muted small">${esc(err.message)}</div>`;
+      }
+    }
+  }
+
+  function matchupHtml(mu, m) {
+    const opp = teamName('NFL', mu.opp);
+    const unit = mu.factors[0] && mu.factors[0].side === 'off' ? 'offense' : 'defense';
+    const headline = {
+      favorable: `Good spot for the ${mu.side}`,
+      tough: `Tough spot for the ${mu.side}`,
+      mixed: 'Mixed matchup',
+    }[mu.verdict];
+    const leanText = (f) => (f.lean > 0 ? `helps the ${mu.side}` : f.lean < 0 ? `works against the ${mu.side}` : 'middle of the pack');
+    const rows = mu.factors
+      .map((f) => {
+        const trend = f.recent
+          ? `<div class="mu-trend">Last ${f.recent.games}: ${fmtMatchupValue({ ...f, value: f.recent.value, fmt: f.fmt === 'count' ? 'dec1' : f.fmt })} (${f.recent.change > 0 ? 'up' : 'down'} ${Math.round(Math.abs(f.recent.change) * 100)}%)</div>`
+          : '';
+        return `<tr class="${f.lean > 0 ? 'mu-good' : f.lean < 0 ? 'mu-bad' : ''}">
+          <td>${esc(f.label)}${trend}</td><td class="num">${fmtMatchupValue(f)}</td>
+          <td class="num"><strong>${ordinal(f.rank)}</strong> <span class="muted">of ${f.of}</span></td>
+          <td class="mu-lean">${leanText(f)}</td></tr>`;
+      })
+      .join('');
+    const skew = (mu.outliers || [])
+      .map((o) => `<li>${esc(outlierSentence(o, state.rankings && state.rankings.data ? state.rankings.data : { teams: [] }).body.replace(/<[^>]+>/g, ''))} <a href="#/rankings?view=outliers&team=${encodeURIComponent(o.team)}">More</a></li>`)
+      .join('');
+    return `<div class="mu ${mu.verdict}">
+      <div class="mu-head"><span class="mu-verdict">${esc(headline)}</span><span class="muted small">${esc(opp)} ${unit}${m.qb && /rush/i.test(m.prop) ? ' vs quarterbacks' : ''} · ${plural(mu.games, 'game')}</span></div>
+      <div class="table-wrap"><table class="mu-table"><tbody>${rows}</tbody></table></div>
+      ${skew ? `<div class="mu-skew"><strong>Careful:</strong><ul>${skew}</ul></div>` : ''}
+      <div class="muted small">Rank 1 is the best ${unit} in the league at it. Green helps your ${mu.side.toLowerCase()}, red works against it. "Last 3" shows when the last three games differ from the season by 15% or more.</div></div>`;
   }
 
   async function showResearch(el, q) {
     el.innerHTML = '<div class="muted small">Looking up recent games… (first time can take ~15 seconds)</div>';
     try {
       el.innerHTML = researchHtml(await loadResearch(q), q);
+      fillMatchups(el);
     } catch (err) {
       el.innerHTML = `<div class="alert small">${esc(err.message)}</div>`;
     }

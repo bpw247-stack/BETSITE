@@ -682,3 +682,20 @@ dialog.wide { width: min(980px, calc(100vw - 24px)); }
 .desk-ok { color: var(--good); font-weight: 600; }
 .desk-bg { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
 .desk-bg h3 { display: flex; align-items: center; gap: 8px; }
+
+/* ---------- matchup box in prop research ---------- */
+.mu { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.mu-head { display: flex; justify-content: space-between; align-items: baseline; gap: 4px 12px; flex-wrap: wrap; margin-bottom: 6px; }
+.mu-verdict { font-family: var(--font-display); font-weight: 700; font-size: 1.15rem; }
+.mu.favorable .mu-verdict { color: var(--good); }
+.mu.tough .mu-verdict { color: var(--bad); }
+.mu-table td { padding: 7px 8px; font-size: .9rem; }
+.mu-table tr.mu-good td:first-child { box-shadow: inset 3px 0 0 var(--good); }
+.mu-table tr.mu-bad td:first-child { box-shadow: inset 3px 0 0 var(--bad); }
+.mu-good .mu-lean { color: var(--good); }
+.mu-bad .mu-lean { color: var(--bad); }
+.mu-lean { font-size: .82rem; color: var(--muted); white-space: nowrap; }
+.mu-trend { font-size: .78rem; color: var(--warn); font-weight: 500; }
+.mu-skew { font-size: .86rem; background: var(--warn-bg); border-radius: var(--radius-sm); padding: 8px 10px; margin: 8px 0; }
+.mu-skew ul { margin: 4px 0 0; padding-left: 18px; }
+@media (max-width: 640px) { .mu-lean { display: none; } }

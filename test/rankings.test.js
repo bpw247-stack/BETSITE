@@ -108,3 +108,36 @@ test('standings: division order by win %, with division record and streak', () =
   assert.strictEqual(st.length, 8);
   assert.ok(st.every((d) => d.teams.length === 4));
 });
+
+test('QB rushing comes from players who threw passes; time of possession is read', () => {
+  const s = summary('9', '2026-10-01T17:00Z', 'DEN', 'SEA', { DEN: { pts: 20 }, SEA: { pts: 17 } });
+  s.boxscore.players[0].statistics[1].athletes.push({ athlete: { displayName: 'DEN QB' }, stats: ['6', '41', '1'] });
+  s.boxscore.teams[0].statistics.push({ name: 'possessionTime', displayValue: '32:45' });
+  const g = R.parseTeamGame(s);
+  const den = g.teams.find((t) => t.abbr === 'DEN');
+  assert.strictEqual(g.v, R.PARSE_VERSION);
+  assert.deepStrictEqual([den.stats.qbRushYards, den.stats.qbRushAtt, den.stats.possessionSec], [41, 6, 32 * 60 + 45]);
+  assert.strictEqual(g.teams.find((t) => t.abbr === 'SEA').stats.qbRushYards, 0);
+});
+
+test('matchup notes: weak run defense helps a rushing Over, hurts the Under; QBs see QB rush yards first', () => {
+  // DAL allows lots of rushing; everyone else is steady
+  const games = season().map((g) => {
+    const dalOpp = g.teams.find((t) => t.abbr !== 'DAL' && g.teams.some((x) => x.abbr === 'DAL'));
+    if (dalOpp) Object.assign(dalOpp.stats, { rushYards: 210, rushAtt: 30, qbRushYards: 60 });
+    return g;
+  });
+  const data = R.buildRankings(games);
+  const over = R.matchupNotes(data, { opp: 'DAL', prop: 'Rushing Yards', side: 'Over', qb: true });
+  assert.strictEqual(over.factors[0].key, 'def.qbRush');
+  const rush = over.factors.find((f) => f.key === 'def.rush');
+  assert.strictEqual(rush.rank, data.teams.length); // worst run defense
+  assert.strictEqual(rush.lean, 1);
+  assert.strictEqual(over.verdict, 'favorable');
+  const under = R.matchupNotes(data, { opp: 'DAL', prop: 'Rushing Yards', side: 'Under' });
+  assert.strictEqual(under.factors[0].key, 'def.rush');
+  assert.strictEqual(under.factors[0].lean, -1);
+  assert.strictEqual(under.side, 'Under');
+  assert.strictEqual(R.matchupNotes(data, { opp: 'XXX', prop: 'Rushing Yards' }), null);
+  assert.strictEqual(R.matchupNotes(data, { opp: 'DAL', prop: 'Anytime TD', side: 'Yes' }).side, 'Yes');
+});

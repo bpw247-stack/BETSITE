@@ -459,7 +459,7 @@ async function propResearch(league, team, player, prop, line, side, opp) {
         const p = grading.findPlayer(box, player, team);
         if (!p) return { date: g.date, opp: g.opp, home: g.home, value: null, dnp: true };
         const v = grading.statForProp(league, prop, p.stats);
-        return { date: g.date, opp: g.opp, home: g.home, value: v == null ? 0 : v, name: p.name };
+        return { date: g.date, opp: g.opp, home: g.home, value: v == null ? 0 : v, name: p.name, qb: league === 'nfl' && (p.stats['passing.ATT'] || 0) >= 5 };
       } catch {
         return null;
       }
@@ -478,7 +478,8 @@ async function propResearch(league, team, player, prop, line, side, opp) {
   const l = line === '' || line == null ? grading.defaultLine(league, prop) : Number(line);
   const summary = grading.propResearchSummary(out, l, side);
   const vsOpp = opp ? out.filter((r) => r.opp === opp && !r.dnp) : [];
-  return { player: name, team, prop, line: l, side: side || 'Over', games: out, summary, vsOpp };
+  const qb = rows.filter((r) => r.qb).length >= 2; // threw 5+ passes in at least two recent games
+  return { player: name, team, prop, line: l, side: side || 'Over', games: out.map(({ qb: _, ...r }) => r), summary, vsOpp, qb };
 }
 
 // ---------- weather ----------
@@ -743,7 +744,7 @@ const rankingJobs = {}; // league -> { status, progress, data, at, error }
 // Team box-score lines for finished games, kept on disk (they never change).
 async function getTeamGame(league, eventId) {
   const cache = boxCache(`${league}-teams`);
-  if (cache.map[eventId]) return cache.map[eventId];
+  if (cache.map[eventId] && cache.map[eventId].v === rankings.PARSE_VERSION) return cache.map[eventId];
   const g = rankings.parseTeamGame(await espnJson(league, `summary?event=${encodeURIComponent(eventId)}`));
   if (g) {
     cache.map[eventId] = { ...g, id: g.id || eventId };
@@ -995,6 +996,16 @@ async function handleApi(req, res, url) {
     } catch (err) {
       return send(res, err.status || 502, { error: err.message });
     }
+  }
+
+  if (resource === 'matchup') {
+    if ((id || '').toLowerCase() !== 'nfl') return send(res, 404, { error: 'Matchup notes are available for the NFL' });
+    const q = url.searchParams;
+    const opp = String(q.get('opp') || '').toUpperCase();
+    if (!rankings.TEAMS.includes(opp)) return send(res, 400, { error: 'Pick the opponent to see their defense' });
+    const st = rankingsStatus('nfl');
+    if (!st.data) return send(res, 200, { status: st.status, progress: st.progress, error: st.error });
+    return send(res, 200, { status: 'ready', season: st.data.season, matchup: rankings.matchupNotes(st.data, { opp, prop: q.get('prop') || '', side: q.get('side') || 'Over', qb: q.get('qb') === '1' }) });
   }
 
   if (resource === 'rankings') {

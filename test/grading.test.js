@@ -111,3 +111,12 @@ test('propResearchSummary computes hit rate, average and median', () => {
   const u = G.propResearchSummary([{ value: 3 }, { value: 7 }], 5.5, 'Under');
   assert.deepStrictEqual([u.hits, u.misses], [1, 1]);
 });
+
+test('findPlayer: last-name fallback never matches a different first name', () => {
+  const box = { players: { 'truman jones': { name: 'Truman Jones', team: 'IND', stats: {} }, 'patrick mahomes': { name: 'Patrick Mahomes', team: 'KC', stats: {} } } };
+  assert.strictEqual(G.findPlayer(box, 'Daniel Jones', 'IND'), null);
+  assert.strictEqual(G.findPlayer(box, 'D. Jones', 'IND'), null);
+  assert.strictEqual(G.findPlayer(box, 'T. Jones', 'IND').name, 'Truman Jones');
+  assert.strictEqual(G.findPlayer(box, 'Mahomes', 'KC').name, 'Patrick Mahomes');
+  assert.strictEqual(G.findPlayer(box, 'P Mahomes').name, 'Patrick Mahomes');
+});

@@ -441,8 +441,10 @@ async function autoSettle() {
 
 // ---------- player prop research ----------
 
-async function propResearch(league, team, player, prop, line, side, opp) {
-  if (grading.statForProp(league, prop, {}) === undefined) throw Object.assign(new Error(`"${prop}" isn't a stat the site can look up`), { status: 400 });
+// A player's recent games for one stat. The bet's team can be wrong (slips and the props feed
+// often don't say which side a player is on), so this checks both teams in the matchup and
+// uses the one the player actually plays for.
+async function playerGameRows(league, team, player, prop) {
   const season = niche.nicheSeasons(league).slice(-1)[0];
   let games = [];
   for (const s of [season, season - 1]) {
@@ -452,21 +454,38 @@ async function propResearch(league, team, player, prop, line, side, opp) {
   }
   const seen = new Set();
   games = games.filter((g) => !seen.has(g.id) && seen.add(g.id)).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 16);
-  const rows = (
+  return (
     await pool(games, 4, async (g) => {
       try {
         const box = await getBoxScore(league, g.id);
         const p = grading.findPlayer(box, player, team);
         if (!p) return { date: g.date, opp: g.opp, home: g.home, value: null, dnp: true };
         const v = grading.statForProp(league, prop, p.stats);
-        return { date: g.date, opp: g.opp, home: g.home, value: v == null ? 0 : v, name: p.name, qb: league === 'nfl' && (p.stats['passing.ATT'] || 0) >= 5 };
+        return { date: g.date, opp: g.opp, home: g.home, value: v == null ? 0 : v, name: p.name, playerTeam: p.team, qb: league === 'nfl' && (p.stats['passing.ATT'] || 0) >= 5 };
       } catch {
         return null;
       }
     })
   ).filter(Boolean);
+}
+
+async function propResearch(league, team, player, prop, line, side, opp) {
+  if (grading.statForProp(league, prop, {}) === undefined) throw Object.assign(new Error(`"${prop}" isn't a stat the site can look up`), { status: 400 });
+  // games where the player was found *as a member of* that team
+  const onTeam = (rows, t) => rows.filter((r) => !r.dnp && r.playerTeam === t).length;
+  let rows = await playerGameRows(league, team, player, prop);
+  let used = team;
+  if (opp && opp !== team && onTeam(rows, team) < 3) {
+    const other = await playerGameRows(league, opp, player, prop).catch(() => []);
+    if (onTeam(other, opp) > onTeam(rows, team)) {
+      rows = other;
+      used = opp;
+    }
+  }
+  // only keep games where he played for that team (not ones where he was the opponent)
+  rows = rows.map((r) => (!r.dnp && r.playerTeam && r.playerTeam !== used ? { date: r.date, opp: r.opp, home: r.home, value: null, dnp: true } : r));
   const name = (rows.find((r) => r.name) || {}).name || null;
-  if (!name) throw Object.assign(new Error(`Couldn't find ${player} in ${team}'s recent box scores. Check the spelling and the team.`), { status: 404 });
+  if (!name) throw Object.assign(new Error(`Couldn't find ${player} in ${team}${opp ? ` or ${opp}` : ''}'s recent box scores. Check the spelling and the team.`), { status: 404 });
   // last 10 games the player actually played (keep DNPs in between for context)
   const out = [];
   let played = 0;
@@ -475,11 +494,15 @@ async function propResearch(league, team, player, prop, line, side, opp) {
     out.push(r);
     if (!r.dnp) played++;
   }
+  const realOpp = used === team ? opp : team;
   const l = line === '' || line == null ? grading.defaultLine(league, prop) : Number(line);
   const summary = grading.propResearchSummary(out, l, side);
-  const vsOpp = opp ? out.filter((r) => r.opp === opp && !r.dnp) : [];
+  const vsOpp = realOpp ? out.filter((r) => r.opp === realOpp && !r.dnp) : [];
   const qb = rows.filter((r) => r.qb).length >= 2; // threw 5+ passes in at least two recent games
-  return { player: name, team, prop, line: l, side: side || 'Over', games: out.map(({ qb: _, ...r }) => r), summary, vsOpp, qb };
+  return {
+    player: name, team: used, opp: realOpp || null, teamChanged: used !== team, prop, line: l, side: side || 'Over',
+    games: out.map(({ qb: _q, playerTeam: _t, ...r }) => r), summary, vsOpp, qb,
+  };
 }
 
 // ---------- weather ----------

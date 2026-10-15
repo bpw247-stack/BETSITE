@@ -3004,6 +3004,7 @@
     const hitRate = s.hits + s.misses ? s.hits / (s.hits + s.misses) : null;
     const dnps = d.games.filter((g) => g.dnp).length;
     return `<div class="pr">
+      ${d.teamChanged ? `<div class="alert small" style="margin-bottom:8px">${esc(d.player)} plays for ${esc(teamName(q.sport, d.team))}, so these are his ${esc(d.team)} games. This bet lists ${esc(teamName(q.sport, q.team))} as his team; edit the bet to fix it.</div>` : ''}
       <div class="pr-head"><strong>${esc(d.player)}</strong> · ${esc(d.prop)}${d.line != null ? ` · ${esc(side)} ${esc(d.line)}` : ''}</div>
       ${d.line != null ? `<div class="pr-stat ${hitRate == null ? '' : hitRate >= 0.6 ? 'pos' : hitRate <= 0.4 ? 'neg' : ''}">${esc(side)} ${esc(d.line)} hit in <strong>${s.hits} of ${s.hits + s.misses + s.pushes}</strong> recent games${hitRate != null ? ` (${pct(hitRate)})` : ''}${s.pushes ? `, ${s.pushes} push` : ''}</div>` : ''}
       <div class="muted small">Average <strong>${s.avg ?? '—'}</strong> · median ${s.median ?? '—'} · high ${s.high ?? '—'} · low ${s.low ?? '—'}${dnps ? ` · missed ${plural(dnps, 'game')}` : ''}</div>
@@ -3012,8 +3013,8 @@
         ${bars}</div>` : ''}
       ${d.vsOpp.length ? `<div class="small" style="margin-top:6px">vs this opponent: ${d.vsOpp.map((g) => `<strong>${g.value}</strong> <span class="muted">(${esc(fmtDate(g.date.slice(0, 10)))})</span>`).join(', ')}</div>` : ''}
       <div class="muted small" style="margin-top:4px">Last ${plural(played.length, 'game')} played, oldest to newest. Source: ESPN box scores.</div>
-      ${q.sport === 'NFL' ? `<div class="pr-matchup" data-matchup="${esc(JSON.stringify({ opp: q.opp || '', prop: d.prop, side: d.side, qb: d.qb ? 1 : 0, player: d.player }))}"></div>` : ''}
-      ${statmuseLinks(q.sport, [`${d.player} ${d.prop} last 10 games`, q.opp ? `${d.player} ${d.prop} vs ${teamName(q.sport, q.opp)}` : '', `${d.player} ${d.prop} this season`])}</div>`;
+      ${q.sport === 'NFL' ? `<div class="pr-matchup" data-matchup="${esc(JSON.stringify({ opp: d.opp || q.opp || '', prop: d.prop, side: d.side, qb: d.qb ? 1 : 0, player: d.player }))}"></div>` : ''}
+      ${statmuseLinks(q.sport, [`${d.player} ${d.prop} last 10 games`, d.opp || q.opp ? `${d.player} ${d.prop} vs ${teamName(q.sport, d.opp || q.opp)}` : '', `${d.player} ${d.prop} this season`])}</div>`;
   }
 
   // "Matchup" box under prop research: where the opponent ranks in the stats that drive this prop.

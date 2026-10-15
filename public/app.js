@@ -3056,19 +3056,25 @@
   function matchupHtml(mu, m) {
     const opp = teamName('NFL', mu.opp);
     const unit = mu.factors[0] && mu.factors[0].side === 'off' ? 'offense' : 'defense';
+    const S = mu.side;
     const headline = {
-      favorable: `Good spot for the ${mu.side}`,
-      tough: `Tough spot for the ${mu.side}`,
+      favorable: `Good spot for the ${S}`,
+      'lean-good': `Leans ${S}`,
       mixed: 'Mixed matchup',
+      'lean-bad': `Leans against the ${S}`,
+      tough: `Tough spot for the ${S}`,
     }[mu.verdict];
-    const leanText = (f) => (f.lean > 0 ? `helps the ${mu.side}` : f.lean < 0 ? `works against the ${mu.side}` : 'middle of the pack');
+    const leanText = (f) => (f.lean > 0 ? `helps the ${S}` : f.lean < 0 ? `hurts the ${S}` : 'neutral');
+    const impactLabel = { major: 'Major', moderate: 'Moderate', minor: 'Minor' };
     const rows = mu.factors
       .map((f) => {
         const trend = f.recent
           ? `<div class="mu-trend">Last ${f.recent.games}: ${fmtMatchupValue({ ...f, value: f.recent.value, fmt: f.fmt === 'count' ? 'dec1' : f.fmt })} (${f.recent.change > 0 ? 'up' : 'down'} ${Math.round(Math.abs(f.recent.change) * 100)}%)</div>`
           : '';
+        const why = f.why ? `<div class="mu-why">${f.inverted ? '↺ ' : ''}${esc(f.why)}</div>` : '';
         return `<tr class="${f.lean > 0 ? 'mu-good' : f.lean < 0 ? 'mu-bad' : ''}">
-          <td>${esc(f.label)}${trend}</td><td class="num">${fmtMatchupValue(f)}</td>
+          <td><span class="mu-impact ${f.impact}" title="How much this stat matters for ${esc(mu.prop)}">${impactLabel[f.impact]}</span> ${esc(f.label)}${why}${trend}</td>
+          <td class="num">${fmtMatchupValue(f)}</td>
           <td class="num"><strong>${ordinal(f.rank)}</strong> <span class="muted">of ${f.of}</span></td>
           <td class="mu-lean">${leanText(f)}</td></tr>`;
       })
@@ -3076,12 +3082,16 @@
     const skew = (mu.outliers || [])
       .map((o) => `<li>${esc(outlierSentence(o, state.rankings && state.rankings.data ? state.rankings.data : { teams: [] }).body.replace(/<[^>]+>/g, ''))} <a href="#/rankings?view=outliers&team=${encodeURIComponent(o.team)}">More</a></li>`)
       .join('');
+    const sup = mu.support;
     return `<div class="mu ${mu.verdict}">
       <div class="mu-head"><span class="mu-verdict">${esc(headline)}</span><span class="muted small">${esc(opp)} ${unit}${m.qb && /rush/i.test(m.prop) ? ' vs quarterbacks' : ''} · ${plural(mu.games, 'game')}</span></div>
+      <div class="mu-meter" role="img" aria-label="Weighted score ${mu.score} from -1 (against the ${esc(S)}) to +1 (for the ${esc(S)})"><span style="left:${Math.round((mu.score + 1) * 50)}%"></span></div>
+      <div class="small mu-summary">${sup.for} of ${sup.of} stats point toward the ${esc(S)}, ${sup.against} against, weighted by how much each one matters for ${esc(mu.prop.toLowerCase())}.${mu.earlySeason ? ' <strong>Early season:</strong> rankings still move a lot.' : ''}</div>
       <div class="table-wrap"><table class="mu-table"><tbody>${rows}</tbody></table></div>
       ${skew ? `<div class="mu-skew"><strong>Careful:</strong><ul>${skew}</ul></div>` : ''}
-      <div class="muted small">Rank 1 is the best ${unit} in the league at it. Green helps your ${mu.side.toLowerCase()}, red works against it. "Last 3" shows when the last three games differ from the season by 15% or more.</div></div>`;
+      <div class="muted small">Rank 1 is the best ${unit} in the league at it. Usually a strong ${unit} hurts the Over, but not always: ↺ marks stats that work the other way for this prop (a strong pass rush leads to more QB scrambles, for example). "Last 3" shows when the last three games differ from the season by 15% or more.</div></div>`;
   }
+
 
   // "Team matchup" for spread, moneyline and total bets: each offense against the other defense.
   const GM_PCT = new Set(['off.third', 'def.third', 'off.sackRate']);
@@ -3528,12 +3538,15 @@ Wager: $55.00   To Win: $50.00">${esc(text)}</textarea></details>
     return null;
   }
 
+  // Only touch the page when something actually changes: these updates happen inside a
+  // MutationObserver callback, and rewriting identical text would trigger it again forever.
   function setCollapsed(card, on, key) {
-    card.classList.toggle('collapsed', on);
+    if (card.classList.contains('collapsed') !== on) card.classList.toggle('collapsed', on);
     const btn = card.querySelector(':scope > .card-head > .collapse-btn, :scope > h2 > .collapse-btn');
     if (btn) {
-      btn.setAttribute('aria-expanded', String(!on));
-      btn.setAttribute('aria-label', `${on ? 'Expand' : 'Collapse'} ${card.dataset.collapseTitle}`);
+      const label = `${on ? 'Expand' : 'Collapse'} ${card.dataset.collapseTitle}`;
+      if (btn.getAttribute('aria-expanded') !== String(!on)) btn.setAttribute('aria-expanded', String(!on));
+      if (btn.getAttribute('aria-label') !== label) btn.setAttribute('aria-label', label);
     }
     if (key) {
       on ? collapsedSet.add(key) : collapsedSet.delete(key);
@@ -3551,8 +3564,10 @@ Wager: $55.00   To Win: $50.00">${esc(text)}</textarea></details>
       count++;
       const title = h.title.textContent.replace(/\s+/g, ' ').trim();
       const key = `${view}:${title}`;
-      card.dataset.collapseTitle = title;
-      card.dataset.collapseKey = key;
+      if (card.dataset.collapseKey !== key) {
+        card.dataset.collapseTitle = title;
+        card.dataset.collapseKey = key;
+      }
       if (!h.head.querySelector(':scope > .collapse-btn')) {
         card.classList.add('collapsible');
         const btn = document.createElement('button');
@@ -3595,7 +3610,8 @@ Wager: $55.00   To Win: $50.00">${esc(text)}</textarea></details>
     const all = app.querySelector('.collapse-all');
     if (!all) return;
     const fold = [...app.querySelectorAll('.card.collapsible')].some((c) => !c.classList.contains('collapsed'));
-    all.textContent = fold ? 'Collapse all' : 'Expand all';
+    const text = fold ? 'Collapse all' : 'Expand all';
+    if (all.textContent !== text) all.textContent = text;
   }
 
   let collapseQueued = false;

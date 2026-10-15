@@ -162,3 +162,50 @@ test('game matchup pairs each offense with the other defense, counts edges and g
   assert.ok(m.outliers.some((o) => o.team === 'DAL'));
   assert.strictEqual(R.gameMatchup(data, { team: 'PHI', opp: 'XXX' }), null);
 });
+
+// A hand-made league where one defense is extreme in chosen stats.
+function league(oppValues) {
+  const keys = ['def.pass', 'def.ypa', 'def.compPct', 'def.sacks', 'def.top', 'def.rush', 'def.qbRush', 'def.ypc', 'def.ints', 'def.takeaways', 'def.points', 'def.rushTd', 'def.passTd', 'def.yards', 'def.third'];
+  const better = Object.fromEntries(R.METRICS.map((m) => [m.key, m.better]));
+  const teams = Array.from({ length: 32 }, (_, i) => ({ abbr: i ? `T${i}` : 'OPP', games: 6, values: {}, totals: {}, ranks: {}, recent: { games: 3 } }));
+  for (const k of keys) {
+    // middle of the pack by default; OPP's rank comes from oppValues (1 = best at it)
+    const oppRank = oppValues[k] || 16;
+    const others = Array.from({ length: 31 }, (_, i) => i + 1).map((r) => (r >= oppRank ? r + 1 : r));
+    teams.forEach((t, i) => {
+      t.ranks[k] = i ? others[i - 1] : oppRank;
+      t.values[k] = better[k] === 'low' ? t.ranks[k] : 100 - t.ranks[k];
+    });
+  }
+  return { teams, outliers: [] };
+}
+
+test('weighted logic: a strong pass rush helps a QB rushing Over even when the run defense is decent', () => {
+  const d = league({ 'def.qbRush': 28, 'def.sacks': 1, 'def.rush': 12 });
+  const m = R.matchupNotes(d, { opp: 'OPP', prop: 'Rushing Yards', side: 'Over', qb: true });
+  const sacks = m.factors.find((f) => f.key === 'def.sacks');
+  assert.strictEqual(sacks.inverted, true);
+  assert.strictEqual(sacks.lean, 1); // the best pass rush helps the scramble Over
+  assert.match(sacks.why, /scrambles/);
+  assert.strictEqual(m.factors[0].key, 'def.qbRush');
+  assert.strictEqual(m.factors[0].impact, 'major');
+  assert.ok(m.score > 0.12, `score ${m.score}`);
+  // the same matchup reads the other way for the Under
+  const u = R.matchupNotes(d, { opp: 'OPP', prop: 'Rushing Yards', side: 'Under', qb: true });
+  assert.strictEqual(u.score, -m.score);
+});
+
+test('weighted logic: major stats outweigh minor ones, and a great run defense helps a passing Over', () => {
+  // elite pass defense (1st) but awful at minor things: still a tough spot for passing yards
+  const tough = R.matchupNotes(league({ 'def.pass': 1, 'def.ypa': 2, 'def.top': 32, 'def.sacks': 32 }), { opp: 'OPP', prop: 'Passing Yards', side: 'Over' });
+  assert.ok(['tough', 'lean-bad'].includes(tough.verdict), tough.verdict);
+  const runD = R.matchupNotes(league({ 'def.rush': 1 }), { opp: 'OPP', prop: 'Passing Yards', side: 'Over' });
+  assert.strictEqual(runD.factors.find((f) => f.key === 'def.rush').lean, 1);
+  // interceptions thrown: a ball-hawking defense helps the Over
+  const ints = R.matchupNotes(league({ 'def.ints': 1, 'def.takeaways': 2 }), { opp: 'OPP', prop: 'Interceptions Thrown', side: 'Over' });
+  assert.ok(ints.score > 0.3 && ints.verdict === 'favorable', `${ints.verdict} ${ints.score}`);
+  // anytime TD uses yes/no
+  const td = R.matchupNotes(league({ 'def.points': 31, 'def.rushTd': 30, 'def.passTd': 29 }), { opp: 'OPP', prop: 'Anytime TD', side: 'No' });
+  assert.strictEqual(td.side, 'No');
+  assert.ok(td.score < -0.3, `${td.score}`);
+});

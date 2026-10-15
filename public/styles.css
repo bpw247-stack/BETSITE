@@ -746,3 +746,12 @@ dialog.wide { width: min(980px, calc(100vw - 24px)); }
 .game-card .gm-units { grid-template-columns: minmax(0, 1fr); }
 .game-card .gm-team .rk-form { display: none; }
 .gm-edge:not(.mine):not(.theirs) { background: var(--neutral-bg); color: var(--text-2); }
+.mu.lean-good .mu-verdict { color: var(--good); }
+.mu.lean-bad .mu-verdict { color: var(--bad); }
+.mu-impact { display: inline-block; min-width: 4.6em; text-align: center; padding: 0 6px; margin-right: 4px; border-radius: 999px; font-size: .7rem; font-weight: 700; background: var(--neutral-bg); color: var(--text-2); vertical-align: 1px; }
+.mu-impact.major { background: var(--sel-bg); color: var(--sel-ink); }
+.mu-impact.moderate { background: var(--border-strong); color: var(--text); }
+.mu-why { font-size: .78rem; color: var(--muted); margin-top: 1px; }
+.mu-meter { position: relative; height: 6px; border-radius: 3px; margin: 4px 0 8px; background: linear-gradient(90deg, var(--bad) 0%, var(--neutral-bg) 42%, var(--neutral-bg) 58%, var(--good) 100%); opacity: .9; }
+.mu-meter span { position: absolute; top: -4px; width: 4px; height: 14px; margin-left: -2px; border-radius: 2px; background: var(--text); }
+.mu-summary { margin-bottom: 6px; color: var(--text-2); }
